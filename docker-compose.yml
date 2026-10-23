@@ -1,0 +1,30 @@
+services:
+  rapla-proxy:
+    build: .
+    container_name: rapla-proxy
+    restart: unless-stopped
+    environment:
+      ICAL_PROXY_TOKEN: ${ICAL_PROXY_TOKEN:?bitte in .env setzen}
+    volumes:
+      # config.yaml liegt ausserhalb des Images: Aenderung + "docker compose restart rapla-proxy" reicht
+      - ./config.yaml:/app/config.yaml:ro
+    # Nur lokal erreichbar. Nach aussen geht es ueber den Cloudflare Tunnel.
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  # Optional: eigener Cloudflare Tunnel. Starten mit:  docker compose --profile tunnel up -d
+  # Wenn du schon einen Tunnel hast, brauchst du das nicht (siehe README).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: rapla-cloudflared
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?bitte in .env setzen}
+    depends_on:
+      - rapla-proxy

@@ -1,0 +1,34 @@
+# Rapla iCal Filter Proxy – Konfiguration
+
+# Feste Upstream-Adresse. Nur "user" und "file" kommen aus der Proxy-URL,
+# der Host kann also nicht per URL umgebogen werden.
+upstream: "https://rapla.dhbw.de/rapla/ical"
+
+# So lange wird der Rapla-Feed zwischengespeichert (Sekunden).
+# Ist Rapla nicht erreichbar, wird die letzte gute Kopie ausgeliefert.
+cache_seconds: 900
+
+# Wahlfach-Pool: aus diesen Faechern waehlt man genau eins (Parameter wahl=...).
+# Eintrag = Teil des Titels in Rapla. Leerzeichen, Gross-/Kleinschreibung und
+# Umlaute sind beim Vergleich egal. Zum Semesterwechsel einfach anpassen.
+# Faecher, die hier NICHT stehen, gelten als Pflichtfach und bleiben immer drin.
+wahlfach_pool:
+  - Signale und Systeme
+  - Digitale Währungssysteme
+  - Geschäftsprozesse
+  - Webengineering 3
+  - Linux Basics
+
+# Optionale Zusatzfaecher: fehlen standardmaessig, mit ?<schluessel>=1 sind sie dabei.
+# (gilt fuer Vorlesungen und die passende Klausur)
+optional:
+  ccna: CCNA
+
+# Zuordnung der Rapla-Kategorien (sind die Farben im Rapla-Kalender)
+categories:
+  lecture: Lehrveranstaltung   # grau
+  exam: Prüfung                # rot
+  other: Sonstiger Termin      # blau; kommt nur mit Ort in semester.ics
+
+# Pruefungen, deren Titel das enthaelt, landen in nachklausuren.ics
+nachklausur_match: "geladene"
