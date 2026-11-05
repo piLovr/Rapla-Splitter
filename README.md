@@ -1,36 +1,48 @@
 # Rapla iCal Filter Proxy
 
-Teilt den Rapla-Feed (DHBW) in vier Kalender auf und filtert dein Wahlfach heraus.
+Teilt den Rapla-Feed (DHBW) in vier Kalender auf, die sich **nicht überschneiden** und zusammen **alles** enthalten,
+was im originalen Rapla steht.
 
-| URL | Inhalt |
-|---|---|
-| `/vorlesungen.ics` | Lehrveranstaltungen (graue Termine) |
-| `/semester.ics` | alles Übrige (Infoveranstaltungen, Semesterstart-Besprechung …) |
-| `/klausuren.ics` | Prüfungen, außer "nur geladene" |
-| `/nachklausuren.ics` | Prüfungen für Geladene |
+| URL | Inhalt | Farbe im Builder |
+|---|---|---|
+| `/vorlesungen.ics` | Lehrveranstaltungen deiner Fächer | gelb |
+| `/veranstaltungen.ics` | alles Übrige (Semesterstart-Besprechung, Infoveranstaltungen …); der alte Pfad `/semester.ics` geht weiter | blau |
+| `/klausuren.ics` | Prüfungen deiner Fächer, dazu die Nachklausuren, die du schreiben musst (`nach=`) | rot |
+| `/rest.ics` | alles, was in keinem der drei anderen liegt: Feiertage, "Beginn Theorie"/"Klausurwoche", nicht belegte Wahlfächer samt Klausuren, nicht gewählte Optionals, Nachklausuren, die du nicht schreibst | grau |
 
-Feiertage und die Pseudo-Ganztägigen ("Beginn Theorie", "Klausurwoche") fehlen überall; sie stehen unter
-`ignore` in `config.yaml`. Alles andere, was weder Vorlesung noch Prüfung ist, landet in `semester.ics`.
-Römische Zahlen gelten als arabische (`Webengineering 3` = `Webengineering III`).
+Der Kalender `/nachklausuren.ics` gibt es nicht mehr: Nachklausuren stehen nur in `klausuren.ics`, wenn du sie
+per `nach=` auswählst, sonst in `rest.ics`.
+
+Die Basis-URL ohne Pfad leitet auf dieses Repo weiter. **Unter `/builder` gibt es einen grafischen URL-Builder**
+mit Live-Vorschau aller vier Kalender in einer Wochenansicht.
 
 ## Parameter
+
+Alle vier Kalender verstehen dieselben Parameter:
 
 | Parameter | Pflicht | Bedeutung |
 |---|---|---|
 | `user` | ja | Rapla-User, wird an Rapla durchgereicht (`@` darf als `%40` kodiert sein) |
 | `file` | ja | Rapla-Kurs, z. B. `25B6` |
-| `wahl` | nein | Stichwort deines Wahlfachs, z. B. `Signale`, `Währung`, `Web`, `Geschäft`, `Linux`, `Robotik`, `Workflow`, `OO` |
-| `ccna` | nein | `ccna=1` nimmt CCNA (Vorlesung + Klausur) mit auf, sonst fehlt es |
+| `wahl` | nein | Stichwort deines Wahlfachs, z. B. `Signale`, `Währung`, `Web`, `Geschäft`, `Linux`, `Robotik`, `Workflow`, `OO`; mehrere mit Komma |
+| `ccna` | nein | `ccna=1` nimmt CCNA (Vorlesung + Klausur) mit auf, sonst liegt es in `rest.ics` |
+| `nach` | nein | Stichworte der Nachklausuren, die du schreiben musst, mehrere mit Komma; `nach=alle` nimmt alle |
+| `token` | nein | wird ignoriert, alte URLs mit Token funktionieren weiter |
 
 Beispiel:
 
 ```
 https://cal.deinedomain.de/vorlesungen.ics?user=DEIN%40USER&file=25B6&wahl=Signale
-https://cal.deinedomain.de/klausuren.ics?user=DEIN%40USER&file=25B6&wahl=Signale
+https://cal.deinedomain.de/klausuren.ics?user=DEIN%40USER&file=25B6&wahl=Signale&nach=Statistik
 ```
 
+Welche Nachklausuren es gibt (und das passende Stichwort), zeigt der Builder; sie gelten als Nachklausur, wenn der
+Titel etwas aus `nachklausur_match` in `config.yaml` enthält (`geladene`, `Wdh`, `Wiederholung` …).
+
 Das Stichwort muss genau ein Wahlfach aus `wahlfach_pool` treffen. Sonst gibt es einen Fehler (HTTP 400)
-mit der Liste der gültigen Fächer. Groß-/Kleinschreibung, Leerzeichen und Umlaute spielen keine Rolle.
+mit der Liste der gültigen Fächer. Groß-/Kleinschreibung, Leerzeichen und Umlaute spielen keine Rolle, römische Zahlen gelten als arabische
+(`Webengineering 3` = `Webengineering III`) und einzelne Tippfehler in Rapla-Titeln werden toleriert.
+Termine, die in keinem Kalender stehen sollen (Feiertage …), stehen unter `ignore` in `config.yaml` und landen in `rest.ics`.
 
 ## Installation
 
@@ -41,7 +53,7 @@ docker compose up -d   # zieht ghcr.io/pilovr/rapla-splitter:latest (wird bei je
 Test auf dem Rechner, auf dem er läuft (das prüft auch, ob Rapla von dort erreichbar ist):
 
 ```bash
-curl -s "http://127.0.0.1:8000/semester.ics?user=DEIN%40USER&file=25B6" | head
+curl -s "http://127.0.0.1:8000/veranstaltungen.ics?user=DEIN%40USER&file=25B6" | head
 ```
 
 ## Cloudflare Tunnel
@@ -67,10 +79,30 @@ dann pushen (Image wird neu gebaut) oder bei gemounteter Datei `docker compose r
 
 ## Verhalten
 
-- Rapla wird höchstens alle 15 Minuten abgefragt. Ist Rapla nicht erreichbar, kommt die letzte gute Kopie.
+- Rapla wird pro Kurs höchstens alle 12 Stunden abgefragt (`cache_seconds` in `config.yaml`), egal wie viele URLs, Wahlfächer
+  oder Builder-Vorschauen darauf zugreifen; gleichzeitige Anfragen teilen sich einen Abruf. Der Cache liegt im Arbeitsspeicher
+  (ein Container-Neustart leert ihn). Ist Rapla nicht erreichbar, kommt die letzte gute Kopie, und Rapla wird erst nach
+  `retry_seconds` (15 min) erneut gefragt.
 - Termine werden unverändert durchgereicht (Serien mit `RRULE`/`EXDATE`, Zeitzonen). Einzige Korrektur:
   das doppelte `DTSTAMP` in jedem Rapla-Termin wird entfernt.
 - Ein `token=`-Parameter (alte URLs) wird ignoriert; der Query-String landet nicht im Zugriffslog.
+
+## Wahlfächer aller Studiengänge finden
+
+`wahlfaecher.py` lädt (wie der Roomfinder) die Kursliste von `api.dhbw.app` und jeden Stundenplan von `dhbw.app`
+(eine Anfrage nach der anderen, 150 ms Pause). Ein Wahlfach erkennt es daran, dass im selben Kurs mehrere
+verschiedene Veranstaltungen zur selben Zeit liegen (mindestens zweimal und bei mindestens der Hälfte der Termine),
+man also nur eine davon besucht. Prüfungen, Feiertage, Besprechungen und parallele Gruppen (`Gruppe A/B`) zählen nicht.
+
+```bash
+python3 wahlfaecher.py --since 2026-11-05 --cache ics-cache --json wahlfaecher.json
+python3 wahlfaecher.py --ics 25B6.ics      # lokale Datei (dhbw.app- oder Rapla-Export), kein Netz
+```
+
+Ausgabe: Wahlfächer je Studiengang (mit den Kursen, in denen sie vorkommen) und ein fertiger `wahlfaecher:`-Block
+je Studiengang. `--since` blendet abgeschlossene Jahrgänge aus, `--cache` speichert die Pläne zwischen.
+Die Liste ist eine Heuristik: Namen aus verschiedenen Studiengängen nicht in einen gemeinsamen `wahlfach_pool`
+kippen (ein Eintrag `Informatik` würde auch `Technische Informatik` erwischen).
 
 ## Tests
 
@@ -78,4 +110,5 @@ dann pushen (Image wird neu gebaut) oder bei gemounteter Datei `docker compose r
 pip install pyyaml
 RAPLA_ICS=/pfad/zur/25B6.ics python3 test_proxy.py
 python3 app.py --ics /pfad/zur/25B6.ics --cal klausuren --wahl Signale   # Ausgabe ansehen
+python3 test_wahlfaecher.py                                              # Wahlfach-Scraper (offline)
 ```

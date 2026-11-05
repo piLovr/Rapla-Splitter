@@ -5,7 +5,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir pyyaml==6.0.3
 
-COPY app.py /app/app.py
+COPY app.py icaltime.py builder.html /app/
 COPY config.yaml /app/config.yaml
 
 # Unprivilegierter Benutzer

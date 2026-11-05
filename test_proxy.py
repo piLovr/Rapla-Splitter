@@ -5,10 +5,13 @@ Aufruf:  RAPLA_ICS=/pfad/zur/25B6.ics python3 test_proxy.py
 import os
 import re
 import threading
+import time
 import unittest
+import json
 import urllib.error
+import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import app
 
@@ -22,34 +25,53 @@ def summaries(feed):
     return [app.parse_event(b)["summary"] for k, b in app.parse_items(feed) if k == "event"]
 
 
-def feed(cal, wahl="", ccna=False):
+def feed(cal, wahl="", ccna=False, nach=""):
     enabled = {"ccna"} if ccna else set()
-    return app.build_feed(TEXT, cal, "25B6", wahl.split(",") if wahl else [], enabled, CFG)
+    return app.build_feed(TEXT, cal, "25B6", wahl.split(",") if wahl else [], enabled, CFG, nach.split(",") if nach else [])
 
 
 class Filtering(unittest.TestCase):
-    def test_vier_kalender_trennen_ohne_ueberschneidung(self):
-        total = sum(1 for k, _ in app.parse_items(TEXT) if k == "event")
-        parts = {c: summaries(feed(c, ccna=True)) for c in app.CALENDARS}
-        kept = sum(len(v) for v in parts.values())
-        dropped = [
-            app.parse_event(b)["summary"]
-            for k, b in app.parse_items(TEXT)
-            if k == "event" and app.classify(app.parse_event(b), CFG) is None
-        ]
-        self.assertEqual(kept + len(dropped), total)
-        self.assertTrue(all(any(x in d for x in ("Karfreitag", "Ostermontag", "Fschingsdienstag", "Beginn Theorie", "Klausurwoche")) for d in dropped), dropped)
+    def events_per_calendar(self, **kw):
+        return {cal: ["".join(app.dedupe_dtstamp(b)) for k, b in app.parse_items(feed(cal, **kw)) if k == "event"] for cal in app.CALENDARS}
 
-    def test_semester_enthaelt_infoveranstaltung(self):
-        s = " ".join(summaries(feed("semester")))
+    def test_vier_kalender_ueberschneidungsfrei_und_vollstaendig(self):
+        original = sorted("".join(app.dedupe_dtstamp(b)) for k, b in app.parse_items(TEXT) if k == "event")
+        for kw in ({}, {"wahl": "Signale"}, {"wahl": "Linux", "ccna": True}, {"wahl": "Signale", "nach": "geladene"}, {"nach": "alle"}):
+            merged = sorted(e for v in self.events_per_calendar(**kw).values() for e in v)
+            self.assertEqual(merged, original, kw)
+
+    def test_veranstaltungen_enthaelt_infoveranstaltung(self):
+        s = " ".join(summaries(feed("veranstaltungen")))
         for expected in ("Semesterstart-Besprechung", "Programmieren - Übungstermin", "Infoveranstaltung"):
             self.assertIn(expected, s)
 
-    def test_feiertage_nirgends(self):
-        for cal in app.CALENDARS:
-            blob = " ".join(summaries(feed(cal, ccna=True)))
-            for bad in ("Karfreitag", "Ostermontag", "Fschingsdienstag", "Klausurwoche", "Beginn Theorie"):
+    def test_feiertage_nur_im_rest(self):
+        holidays = ("Karfreitag", "Ostermontag", "Fschingsdienstag", "Klausurwoche", "Beginn Theorie")
+        for cal in ("vorlesungen", "veranstaltungen", "klausuren"):
+            blob = " ".join(summaries(feed(cal, ccna=True, nach="alle")))
+            for bad in holidays:
                 self.assertNotIn(bad, blob, cal)
+        rest = " ".join(summaries(feed("rest")))
+        for holiday in holidays:
+            self.assertIn(holiday, rest)
+
+    def test_abgewaehltes_landet_im_rest(self):
+        rest = "\n".join(summaries(feed("rest", wahl="Signale")))
+        for other in ("Digitale Währungssysteme", "Geschäftsprozesse", "Webengineering 3", "Linux Basics", "Klausur Linux Basics",
+                      "Klausur Geschäftsprozesse", "Klausur Digitale Währungssysteme", "CCNA"):
+            self.assertIn(other, rest)
+        for mine in ("Signale und Systeme", "Klausur Signale und Systeme", "Netztechnik"):
+            self.assertNotIn(mine, rest)
+        self.assertIn("CCNA", "\n".join(summaries(feed("vorlesungen", wahl="Signale", ccna=True))))
+        self.assertNotIn("CCNA", "\n".join(summaries(feed("rest", wahl="Signale", ccna=True))))
+
+    def test_nachklausur_nur_auf_wunsch_in_klausuren(self):
+        self.assertNotIn("geladene", "\n".join(summaries(feed("klausuren", wahl="Linux"))))
+        self.assertIn("nur geladene", "\n".join(summaries(feed("rest", wahl="Linux"))))
+        for nach in ("geladene", "TINF25", "alle", "  NUR Geladene "):
+            self.assertTrue(any("nur geladene" in x for x in summaries(feed("klausuren", wahl="Linux", nach=nach))), nach)
+            self.assertFalse(any("nur geladene" in x for x in summaries(feed("rest", wahl="Linux", nach=nach))), nach)
+        self.assertFalse(any("geladene" in x for x in summaries(feed("klausuren", wahl="Linux", nach="Quanten"))))
 
     def test_tippfehler_im_titel(self):
         for cal in ("vorlesungen", "klausuren"):
@@ -75,11 +97,6 @@ class Filtering(unittest.TestCase):
         for other in ("Klausur Geschäftsprozesse", "Klausur Digitale Währungssysteme", "Klausur Signale und Systeme"):
             self.assertNotIn(other, s)
         self.assertNotIn("geladene", s)
-
-    def test_nachklausur(self):
-        s = summaries(feed("nachklausuren", wahl="Linux"))
-        self.assertEqual(len(s), 1)
-        self.assertIn("nur geladene", s[0])
 
     def test_ohne_wahl_alles_behalten(self):
         blob = "\n".join(summaries(feed("vorlesungen")))
@@ -146,7 +163,7 @@ class Http(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.headers.get("Content-Type"), e.read().decode()
 
-    base = "user=li%40dhbw-karlsruhe.aa&file=25B6&token=" + "t" * 24
+    base = "user=li%40dhbw-karlsruhe.aa&file=25B6"
 
     def test_ok(self):
         code, ctype, body = self.get(f"/vorlesungen.ics?{self.base}&wahl=Signale")
@@ -159,24 +176,162 @@ class Http(unittest.TestCase):
         self.assertNotIn("CCNA", self.get(f"/vorlesungen.ics?{self.base}")[2])
         self.assertIn("CCNA", self.get(f"/vorlesungen.ics?{self.base}&ccna=1")[2])
 
-    def test_token_egal(self):
-        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 200)
-        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6&token=irgendwas")[0], 200)
-
     def test_ungueltige_parameter(self):
-        t = "t" * 24
-        self.assertEqual(self.get(f"/vorlesungen.ics?file=25B6&token={t}")[0], 400)
-        self.assertEqual(self.get(f"/vorlesungen.ics?user=a&file=../../etc&token={t}")[0], 400)
+        self.assertEqual(self.get("/vorlesungen.ics?file=25B6")[0], 400)
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=../../etc")[0], 400)
         code, _, body = self.get(f"/vorlesungen.ics?{self.base}&wahl=Quanten")
         self.assertEqual(code, 400)
         self.assertIn("Signale und Systeme", body)
 
     def test_routen(self):
         self.assertEqual(self.get("/health")[0], 200)
-        self.assertEqual(self.get("/")[0], 404)
         self.assertEqual(self.get("/foo.ics")[0], 404)
+        self.assertEqual(self.get(f"/nachklausuren.ics?{self.base}")[0], 404)  # Kalender wurde entfernt
         for cal in app.CALENDARS:
             self.assertEqual(self.get(f"/{cal}.ics?{self.base}")[0], 200, cal)
+
+    def test_alter_semester_pfad(self):
+        old = self.get(f"/semester.ics?{self.base}")
+        new = self.get(f"/veranstaltungen.ics?{self.base}")
+        self.assertEqual(old[0], 200)
+        self.assertIn("Infoveranstaltung", old[2])
+        self.assertEqual(sorted(re.findall(r"SUMMARY:.*", old[2])), sorted(re.findall(r"SUMMARY:.*", new[2])))
+
+    def test_url_optionen_fuer_alle_kalender(self):
+        for cal in app.CALENDARS:
+            self.assertEqual(self.get(f"/{cal}.ics?{self.base}&wahl=Signale&ccna=1&nach=geladene")[0], 200, cal)
+            self.assertEqual(self.get(f"/{cal}.ics?{self.base}&wahl=Quanten")[0], 400, cal)
+        rest_plain = self.get(f"/rest.ics?{self.base}")[2]
+        rest_signale = self.get(f"/rest.ics?{self.base}&wahl=Signale")[2]
+        self.assertNotEqual(rest_plain, rest_signale)
+
+    def test_ohne_token_und_mit_beliebigem_token(self):
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 200)
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6&token=altes-token")[0], 200)
+
+    def test_basis_url_leitet_aufs_repo(self):
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        opener = urllib.request.build_opener(NoRedirect)
+        for path in ("/", "/?token=x&user=y"):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                opener.open(f"http://127.0.0.1:{self.port}{path}", timeout=5)
+            self.assertEqual(cm.exception.code, 302)
+            self.assertEqual(cm.exception.headers["Location"], "https://github.com/piLovr/Rapla-Splitter")
+
+    def test_builder_seite_und_optionen(self):
+        code, ctype, body = self.get("/builder")
+        self.assertEqual(code, 200)
+        self.assertIn("text/html", ctype)
+        self.assertIn("URL-Builder", body)
+        self.assertEqual(self.get("/builder/")[0], 200)
+        opts = json.loads(self.get("/builder/options.json")[2])
+        self.assertEqual(opts["wahlfach_pool"], CFG["wahlfach_pool"])
+        self.assertEqual(opts["optional"], CFG["optional"])
+        self.assertEqual(list(opts["calendars"]), list(app.CALENDARS))
+
+    def test_preview_json(self):
+        code, ctype, body = self.get(f"/preview.json?{self.base}&wahl=Signale")
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertEqual(list(data["calendars"]), list(app.CALENDARS))
+        flat = {c: [e["title"] for e in evs] for c, evs in data["calendars"].items()}
+        self.assertIn("Signale und Systeme", flat["vorlesungen"])
+        self.assertIn("Linux Basics", flat["rest"])
+        self.assertIn("Karfreitag", flat["rest"])
+        self.assertTrue(any("Infoveranstaltung" in t for t in flat["veranstaltungen"]))
+        self.assertGreater(flat["vorlesungen"].count("Signale und Systeme"), 3)  # Serie ist ausgeklappt
+        e = data["calendars"]["vorlesungen"][0]
+        self.assertRegex(e["start"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d$")
+        self.assertLess(e["start"], e["end"])
+        self.assertEqual([n["keyword"] for n in data["nachklausuren"]], ["Prüfung - TINF25 - nur geladene Student*innen"])
+        # das Stichwort aus der Vorschau funktioniert direkt als ?nach=
+        kw = urllib.parse.quote(data["nachklausuren"][0]["keyword"])
+        self.assertIn("nur geladene", self.get(f"/klausuren.ics?{self.base}&wahl=Signale&nach={kw}")[2])
+
+    def test_preview_zeiten_sind_berliner_lokalzeit(self):
+        data = json.loads(self.get(f"/preview.json?{self.base}")[2])
+        stat = [e for e in data["calendars"]["vorlesungen"] if e["title"] == "Statistik" and e["start"].startswith("2026-11-05")]
+        self.assertEqual([(e["start"], e["end"]) for e in stat], [("2026-11-05T08:30", "2026-11-05T11:45")])
+
+    def test_preview_fehler(self):
+        self.assertEqual(self.get("/preview.json?file=25B6")[0], 400)
+        self.assertEqual(self.get(f"/preview.json?{self.base}&wahl=Quanten")[0], 400)
+
+
+class Cache(unittest.TestCase):
+    """fetch() gegen einen lokalen Fake-Rapla: zaehlt Abrufe."""
+
+    mode = "ok"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.hits = 0
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                cls.hits += 1
+                time.sleep(0.2)
+                if cls.mode == "down":
+                    self.send_response(500)
+                    self.end_headers()
+                    return
+                data = TEXT.encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.cfg = dict(CFG, upstream=f"http://127.0.0.1:{cls.srv.server_address[1]}/ical", cache_seconds=3600, retry_seconds=900)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def setUp(self):
+        self._saved = (app.CFG, dict(app._cache))
+        app.CFG = dict(self.cfg)
+        app._cache.clear()
+        type(self).hits, type(self).mode = 0, "ok"
+
+    def tearDown(self):
+        app.CFG = self._saved[0]
+        app._cache.clear()
+        app._cache.update(self._saved[1])
+
+    def test_zweiter_abruf_kommt_aus_dem_cache_auch_fuer_anderen_user(self):
+        a = app.fetch("a", "25B6")
+        b = app.fetch("b", "25B6")
+        self.assertEqual(a, b)
+        self.assertEqual(self.hits, 1)
+        app.fetch("a", "25B1")  # anderer Kurs -> neuer Abruf
+        self.assertEqual(self.hits, 2)
+
+    def test_gleichzeitige_anfragen_teilen_sich_einen_abruf(self):
+        threads = [threading.Thread(target=app.fetch, args=("a", "25B6")) for _ in range(8)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(self.hits, 1)
+
+    def test_nach_ablauf_neu_holen_und_bei_ausfall_veraltete_kopie(self):
+        app.fetch("a", "25B6")
+        app._cache["25B6"] = (time.time() - 7200, app._cache["25B6"][1])  # abgelaufen
+        type(self).mode = "down"
+        self.assertEqual(app.fetch("a", "25B6"), TEXT)  # veraltete Kopie
+        self.assertEqual(self.hits, 2)
+        app.fetch("a", "25B6")  # Wartezeit (retry_seconds) laeuft: kein weiterer Abruf
+        self.assertEqual(self.hits, 2)
+
+    def test_ausfall_ohne_kopie_ist_fehler(self):
+        type(self).mode = "down"
+        with self.assertRaises(Exception):
+            app.fetch("a", "25B6")
 
 
 if __name__ == "__main__":

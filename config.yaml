@@ -4,9 +4,12 @@
 # der Host kann also nicht per URL umgebogen werden.
 upstream: "https://rapla.dhbw.de/rapla/ical"
 
-# So lange wird der Rapla-Feed zwischengespeichert (Sekunden).
-# Ist Rapla nicht erreichbar, wird die letzte gute Kopie ausgeliefert.
-cache_seconds: 900
+# So lange wird der Rapla-Feed eines Kurses zwischengespeichert (Sekunden), 43200 = 12 h = zweimal am Tag.
+# Der Cache gilt pro Kurs ("file"), egal wie viele URLs/Wahlfaecher darauf zeigen, und liegt im Arbeitsspeicher
+# (Container-Neustart leert ihn). Ist Rapla nicht erreichbar, wird die letzte gute Kopie ausgeliefert und
+# Rapla erst nach retry_seconds wieder gefragt.
+cache_seconds: 43200
+retry_seconds: 900
 
 # Wahlfach-Pool: aus diesen Faechern waehlt man genau eins (Parameter wahl=...).
 # Eintrag = Teil des Titels in Rapla. Leerzeichen, Gross-/Kleinschreibung und
@@ -29,7 +32,7 @@ optional:
   ccna: CCNA
 
 # Termine, die in KEINEM Kalender landen sollen (Teil des Titels, Schreibweise egal).
-# Alles andere, was weder Vorlesung noch Pruefung ist, kommt in semester.ics.
+# Sie landen in rest.ics. Alles andere, was weder Vorlesung noch Pruefung ist, kommt in veranstaltungen.ics.
 ignore:
   - Neujahr
   - Heilige Drei Koenige
@@ -55,5 +58,11 @@ categories:
   exam: Prüfung                # rot
   other: Sonstiger Termin      # blau; 
 
-# Pruefungen, deren Titel das enthaelt, landen in nachklausuren.ics
-nachklausur_match: "geladene"
+# Pruefungen, deren Titel eines davon enthaelt, sind Nachklausuren: sie landen nur dann in klausuren.ics,
+# wenn man sie per ?nach=Stichwort (oder nach=alle) auswaehlt, sonst in rest.ics
+nachklausur_match:
+  - geladene
+  - Wdh
+  - Wiederholung
+  - Nachklausur
+  - Nach- bzw.
