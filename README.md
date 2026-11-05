@@ -90,7 +90,8 @@ dann pushen (Image wird neu gebaut) oder bei gemounteter Datei `docker compose r
   (sonst `429`), höchstens 20 echte Rapla-Abrufe pro 10 Minuten (Cache-Treffer zählen nicht); wer das reißt, ist 30 Minuten
   gesperrt. Hinter dem Cloudflare Tunnel wird die IP aus `CF-Connecting-IP` gelesen (`client_ip_header`).
 - Unbekannte Kurse/User bei Rapla ergeben `404` mit Rapla-Meldung (10 Minuten zwischengespeichert, also keine Abruf-Flut durch
-  Tippfehler). Der Builder lädt nur auf Knopfdruck, nicht beim Tippen.
+  Tippfehler). Der Builder lädt erst 1 s nach dem letzten Tastendruck und nur bei geändertem User oder Kurs; Wahlfächer,
+  Optionals und Nachklausuren ordnet er im Browser neu zu, ohne Anfrage.
 
 ## Wahlfächer aller Studiengänge finden
 

@@ -266,44 +266,57 @@ def iso(t):
 
 
 def build_preview(text, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
-    """Alle Termine (Serien ausgeklappt, Berliner Lokalzeit) je Kalender als JSON-faehiges Dict, fuer den Builder."""
+    """Alle Termine (Serien ausgeklappt, Berliner Lokalzeit) fuer den Builder.
+
+    Jeder Termin traegt neben `cal` (Zuordnung fuer die uebergebenen Parameter) die Bausteine von assign():
+    `kind` (classify), `pool` (passende Wahlfaecher), `opts` (passende Optionals) und `nach` (passende
+    Nachklausur-Stichworte). Damit ordnet der Builder beim An-/Abwaehlen selbst neu zu, ohne neue Anfrage.
+    """
     chosen = resolve_wahl(wahl_keywords, cfg["wahlfach_pool"])
-    cals = {c: [] for c in CALENDARS}
-    nach = {}
+    items, nach = [], {}
     for kind, block in parse_items(text):
-        if kind != "event":
-            continue
-        ev = parse_event(block)
-        cal = assign(ev, chosen, enabled_opts, nach_keywords, cfg)
-        title = re.sub(r"\s+KA-[A-Z0-9-]+.*$", "", re.sub(r"\s+", " ", ev["summary"]).strip())  # Kurslisten abschneiden
-        if classify(ev, cfg) == "nachklausur" and selected(ev, chosen, enabled_opts, cfg):
-            nach[nach_keyword(title)] = title
+        if kind == "event":
+            ev = parse_event(block)
+            title = re.sub(r"\s+KA-[A-Z0-9-]+.*$", "", re.sub(r"\s+", " ", ev["summary"]).strip())  # Kurslisten abschneiden
+            if classify(ev, cfg) == "nachklausur":
+                nach[nach_keyword(title)] = title
+            items.append((ev, title, block))
+    events = []
+    for ev, title, block in items:
+        norm_title = norm(ev["summary"])
+        info = {
+            "title": title,
+            "location": ev["location"].strip(),
+            "cal": assign(ev, chosen, enabled_opts, nach_keywords, cfg),
+            "kind": classify(ev, cfg),
+            "pool": [e for e in cfg["wahlfach_pool"] if title_has(e, norm_title)],
+            "opts": [k for k, p in cfg["optional"].items() if norm(p) in norm_title],
+            "nach": [k for k in nach if norm(k) and norm(k) in norm_title],
+        }
         times, rrule, exdates = {}, "", []
         for g in logical_lines(block):
             name = prop_name(g)
             if name in ("DTSTART", "DTEND") and name not in times:
-                times[name] = (prop_value(g), "VALUE=DATE" in g[0].upper())
+                times[name] = prop_value(g)
             elif name == "RRULE" and not rrule:
                 rrule = prop_value(g)
             elif name == "EXDATE":
                 exdates.append(prop_value(g))
         if "DTSTART" not in times:
             continue
-        base = {"title": title, "location": ev["location"].strip()}
-        start = icaltime.parse_value(times["DTSTART"][0])
+        start = icaltime.parse_value(times["DTSTART"])
         if start is None:  # ganztaegig
-            day = icaltime.parse_date(times["DTSTART"][0])
+            day = icaltime.parse_date(times["DTSTART"])
             if day:
-                cals[cal].append({**base, "start": day.strftime("%Y-%m-%d"), "end": day.strftime("%Y-%m-%d"), "allDay": True})
+                events.append({**info, "start": day.strftime("%Y-%m-%d"), "end": day.strftime("%Y-%m-%d"), "allDay": True})
             continue
-        end = icaltime.parse_value(times["DTEND"][0]) if "DTEND" in times else None
+        end = icaltime.parse_value(times["DTEND"]) if "DTEND" in times else None
         length = end - start if end and end > start else timedelta(hours=1)
         starts = icaltime.expansions(rrule, icaltime.exdate_times(exdates), start) if rrule else [start]
-        cals[cal] += [{**base, "start": iso(t), "end": iso(t + length), "allDay": False} for t in starts]
-    for evs in cals.values():
-        evs.sort(key=lambda e: (e["start"], e["title"]))
+        events += [{**info, "start": iso(t), "end": iso(t + length), "allDay": False} for t in starts]
+    events.sort(key=lambda e: (e["start"], e["title"]))
     return {
-        "calendars": cals,
+        "events": events,
         "nachklausuren": [{"keyword": k, "title": t} for k, t in sorted(nach.items())],
     }
 

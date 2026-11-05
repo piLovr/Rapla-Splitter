@@ -236,14 +236,14 @@ class Http(unittest.TestCase):
         code, ctype, body = self.get(f"/preview.json?{self.base}&wahl=Signale")
         self.assertEqual(code, 200)
         data = json.loads(body)
-        self.assertEqual(list(data["calendars"]), list(app.CALENDARS))
-        flat = {c: [e["title"] for e in evs] for c, evs in data["calendars"].items()}
+        self.assertTrue({e["cal"] for e in data["events"]} <= set(app.CALENDARS))
+        flat = {c: [e["title"] for e in data["events"] if e["cal"] == c] for c in app.CALENDARS}
         self.assertIn("Signale und Systeme", flat["vorlesungen"])
         self.assertIn("Linux Basics", flat["rest"])
         self.assertIn("Karfreitag", flat["rest"])
         self.assertTrue(any("Infoveranstaltung" in t for t in flat["veranstaltungen"]))
         self.assertGreater(flat["vorlesungen"].count("Signale und Systeme"), 3)  # Serie ist ausgeklappt
-        e = data["calendars"]["vorlesungen"][0]
+        e = next(e for e in data["events"] if e["cal"] == "vorlesungen")
         self.assertRegex(e["start"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d$")
         self.assertLess(e["start"], e["end"])
         self.assertEqual([n["keyword"] for n in data["nachklausuren"]], ["Prüfung - TINF25 - nur geladene Student*innen"])
@@ -253,8 +253,32 @@ class Http(unittest.TestCase):
 
     def test_preview_zeiten_sind_berliner_lokalzeit(self):
         data = json.loads(self.get(f"/preview.json?{self.base}")[2])
-        stat = [e for e in data["calendars"]["vorlesungen"] if e["title"] == "Statistik" and e["start"].startswith("2026-11-05")]
+        stat = [e for e in data["events"] if e["title"] == "Statistik" and e["start"].startswith("2026-11-05")]
         self.assertEqual([(e["start"], e["end"]) for e in stat], [("2026-11-05T08:30", "2026-11-05T11:45")])
+
+    def test_preview_bausteine_reichen_fuer_neuzuordnung_im_browser(self):
+        """Der Builder ordnet beim Anhaken selbst neu zu (gleiche Regel wie hier); das muss assign() entsprechen."""
+        raw = json.loads(self.get(f"/preview.json?{self.base}")[2])["events"]
+        pool, keys = CFG["wahlfach_pool"], [n["keyword"] for n in json.loads(self.get(f"/preview.json?{self.base}")[2])["nachklausuren"]]
+
+        def client(e, wahl, opts, nach):  # Spiegel von assignClient() in builder.html
+            if e["kind"] == "rest":
+                return "rest"
+            if wahl and e["pool"] and not set(e["pool"]) & wahl:
+                return "rest"
+            if any(o not in opts for o in e["opts"]):
+                return "rest"
+            if e["kind"] == "nachklausur":
+                return "klausuren" if "alle" in nach or set(e["nach"]) & nach else "rest"
+            return e["kind"]
+
+        combos = [(set(), set(), set()), ({pool[0]}, set(), set()), ({pool[4], pool[5]}, {"ccna"}, set(keys)),
+                  ({pool[1]}, set(), {"alle"}), (set(pool), {"ccna"}, set())]
+        for wahl, opts, nach in combos:
+            q = self.base + (f"&wahl={urllib.parse.quote(','.join(sorted(wahl)))}" if wahl else "")
+            q += "".join(f"&{o}=1" for o in opts) + (f"&nach={urllib.parse.quote(','.join(sorted(nach)))}" if nach else "")
+            server = json.loads(self.get(f"/preview.json?{q}")[2])["events"]
+            self.assertEqual([e["cal"] for e in server], [client(e, wahl, opts, nach) for e in raw], (wahl, opts, nach))
 
     def test_preview_fehler(self):
         self.assertEqual(self.get("/preview.json?file=25B6")[0], 400)
