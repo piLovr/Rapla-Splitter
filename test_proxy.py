@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import app
 
+REAL_FETCH = app.fetch  # Http-Tests ersetzen app.fetch, die Cache-/Schutz-Tests brauchen das Original
 ICS_PATH = os.environ.get("RAPLA_ICS", "25B6.ics")
 CFG = app.load_config(os.path.join(os.path.dirname(__file__), "config.yaml"))
 with open(ICS_PATH, encoding="utf-8") as f:
@@ -295,13 +296,14 @@ class Cache(unittest.TestCase):
         cls.srv.shutdown()
 
     def setUp(self):
-        self._saved = (app.CFG, dict(app._cache))
+        self._saved = (app.CFG, dict(app._cache), app.fetch)
+        app.fetch = REAL_FETCH
         app.CFG = dict(self.cfg)
         app._cache.clear()
         type(self).hits, type(self).mode = 0, "ok"
 
     def tearDown(self):
-        app.CFG = self._saved[0]
+        app.CFG, app.fetch = self._saved[0], self._saved[2]
         app._cache.clear()
         app._cache.update(self._saved[1])
 
@@ -332,6 +334,141 @@ class Cache(unittest.TestCase):
         type(self).mode = "down"
         with self.assertRaises(Exception):
             app.fetch("a", "25B6")
+
+
+class Schutz(unittest.TestCase):
+    """Rate-Limit, Sperre, Fehlerbehandlung. Nutzt eigene Limiter und Fake-Rapla."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.upstream_hits = 0
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                cls.upstream_hits += 1
+                if "file=25B6" in self.path:
+                    data, code = TEXT.encode(), 200
+                else:
+                    data, code = b"The calendar 'x' you tried to retrieve is not published or available.", 404
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.port = cls.srv.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fake.shutdown()
+        cls.srv.shutdown()
+
+    def setUp(self):
+        self._saved = (app.CFG, app.LIMITER, dict(app._cache), dict(app._failed), app.fetch)
+        app.fetch = REAL_FETCH
+        app.CFG = dict(CFG, upstream=f"http://127.0.0.1:{self.fake.server_address[1]}/ical")
+        app.CFG["rate_limit"] = dict(CFG["rate_limit"])
+        app.LIMITER = app.Limiter()
+        app._cache.clear()
+        app._failed.clear()
+        type(self).upstream_hits = 0
+
+    def tearDown(self):
+        app.CFG, app.LIMITER, app.fetch = self._saved[0], self._saved[1], self._saved[4]
+        for d, saved in ((app._cache, self._saved[2]), (app._failed, self._saved[3])):
+            d.clear()
+            d.update(saved)
+
+    def get(self, path, headers=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.read().decode(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(), dict(e.headers)
+
+    def test_unbekannter_kurs_ist_404_mit_klartext_und_wird_nur_einmal_erfragt(self):
+        for _ in range(3):
+            code, body, _h = self.get("/preview.json?user=a&file=tinf25b6")
+            self.assertEqual(code, 404)  # nicht 5xx: Cloudflare ersetzt sonst den Text durch eine HTML-Fehlerseite
+            self.assertIn("not published", body)
+        self.assertEqual(self.upstream_hits, 1)
+
+    def test_upstream_ausfall_ist_502(self):
+        app.CFG["upstream"] = "http://127.0.0.1:9/ical"
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 502)
+
+    def test_abruf_budget_fuehrt_zur_sperre(self):
+        app.CFG["rate_limit"]["upstream_per_10min"] = 3
+        codes = [self.get(f"/vorlesungen.ics?user=a&file=K{i}")[0] for i in range(3)]
+        self.assertEqual(codes, [404, 404, 404])
+        code, body, headers = self.get("/vorlesungen.ics?user=a&file=K99")
+        self.assertEqual(code, 429)
+        self.assertIn("Retry-After", headers)
+        self.assertGreater(int(headers["Retry-After"]), 1000)
+        # gesperrt: selbst gueltige Kurse kommen nicht durch, health und andere IPs schon
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 429)
+        self.assertEqual(self.get("/health")[0], 200)
+        other = {"CF-Connecting-IP": "203.0.113.7"}
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6", other)[0], 200)
+
+    def test_cache_treffer_verbrauchen_kein_budget(self):
+        app.CFG["rate_limit"]["upstream_per_10min"] = 1
+        for _ in range(5):
+            self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 200)
+
+    def test_anfrage_limit_pro_minute(self):
+        app.CFG["rate_limit"]["requests_per_minute"] = 3
+        codes = [self.get("/builder/options.json")[0] for _ in range(5)]
+        self.assertEqual(codes, [200, 200, 200, 429, 429])
+        self.assertEqual(self.get("/health")[0], 200)
+
+    def test_limit_null_schaltet_ab(self):
+        app.CFG["rate_limit"].update(requests_per_minute=0, upstream_per_10min=0)
+        for i in range(5):
+            self.assertEqual(self.get(f"/vorlesungen.ics?user=a&file=K{i}")[0], 404)
+
+    def test_client_ip_header_wird_geprueft(self):
+        app.CFG["rate_limit"]["requests_per_minute"] = 1
+        self.assertEqual(self.get("/builder/options.json", {"CF-Connecting-IP": "198.51.100.1"})[0], 200)
+        self.assertEqual(self.get("/builder/options.json", {"CF-Connecting-IP": "198.51.100.1"})[0], 429)
+        self.assertEqual(self.get("/builder/options.json", {"CF-Connecting-IP": "198.51.100.2"})[0], 200)
+        # Muell im Header faellt auf die Verbindungs-IP zurueck (keine Umgehung durch Fantasiewerte)
+        self.assertEqual(self.get("/builder/options.json", {"CF-Connecting-IP": "nicht-eine-ip"})[0], 200)
+        self.assertEqual(self.get("/builder/options.json", {"CF-Connecting-IP": "../../x"})[0], 429)
+
+    def test_limiter_sperre_laeuft_ab(self):
+        lim, cfg = app.Limiter(), {"requests_per_minute": 0, "upstream_per_10min": 1, "ban_seconds": 60}
+        lim.upstream("1.2.3.4", cfg, now=1000)
+        with self.assertRaises(app.RateLimited):
+            lim.upstream("1.2.3.4", cfg, now=1001)
+        with self.assertRaises(app.RateLimited):
+            lim.request("1.2.3.4", cfg, now=1030)
+        lim.request("1.2.3.4", cfg, now=1070)  # Sperre vorbei
+
+    def test_handler_fehler_wird_500_statt_abgebrochener_verbindung(self):
+        orig = app.build_preview
+        app.build_preview = lambda *a, **k: 1 / 0
+        try:
+            code, body, _ = self.get("/preview.json?user=a&file=25B6")
+        finally:
+            app.build_preview = orig
+        self.assertEqual(code, 500)
+
+    def test_serienregel_mit_datum_als_until(self):
+        from datetime import datetime
+        start = datetime(2026, 10, 9, 8)
+        for until in ("20261023", "20261023T060000Z", "20261023T080000"):
+            got = app.icaltime.expansions(f"FREQ=WEEKLY;UNTIL={until}", set(), start)
+            self.assertEqual(len(got), 3, until)
+        self.assertEqual(app.icaltime.expansions("FREQ=WEEKLY;COUNT=abc", set(), start), [start])
+        self.assertEqual(app.icaltime.expansions("FREQ=MONTHLY", set(), start), [start])
 
 
 if __name__ == "__main__":

@@ -78,6 +78,10 @@
   a.btn { border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; font-size: 13.5px; color: var(--fg); text-decoration: none; white-space: nowrap; display: inline-flex; align-items: center; }
   button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.btn.ok { border-color: #2f9e44; color: #2f9e44; }
+  .actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+  .hint.err { color: var(--c-klausuren); }
+  .stale { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 12px; margin-bottom: 12px; border-radius: 8px; background: color-mix(in srgb, var(--c-vorlesungen) 16%, var(--panel)); border: 1px solid color-mix(in srgb, var(--c-vorlesungen) 45%, transparent); font-size: 13.5px; }
+  button.btn:disabled { opacity: .55; cursor: default; }
   .disabled-urls { opacity: .5; pointer-events: none; }
 
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-bottom: 12px; }
@@ -135,7 +139,7 @@
 
 <main>
   <div class="side">
-    <section class="card">
+    <form class="card" id="form" autocomplete="off" novalidate>
       <h2>Dein Rapla</h2>
       <label class="field"><span>Rapla-User</span>
         <input type="text" id="user" placeholder="z. B. vorname.nachname@dhbw-karlsruhe.aa" autocomplete="off" spellcheck="false">
@@ -144,7 +148,9 @@
         <input type="text" id="file" placeholder="z. B. 25B6" autocomplete="off" spellcheck="false">
       </label>
       <p class="hint">Beides steht in der URL deines Rapla-Kalenders (<code>user=…&amp;file=…</code>).</p>
-    </section>
+      <p class="hint err" id="formErr" role="alert" hidden></p>
+      <div class="actions"><button class="btn primary" id="load" type="submit">Vorschau laden</button></div>
+    </form>
 
     <section class="card">
       <h2>Wahlfach</h2>
@@ -178,8 +184,9 @@
       <button class="btn" id="next" type="button" aria-label="Nächste Woche">›</button>
       <input type="date" id="jump" aria-label="Zu Datum springen" style="width:auto">
     </div>
+    <div class="stale" id="stale" hidden><span>Einstellungen geändert, die Vorschau zeigt noch den alten Stand.</span><button class="btn" id="reload" type="button">Vorschau aktualisieren</button></div>
     <div class="legend" id="legend" role="group" aria-label="Kalender ein- und ausblenden"></div>
-    <div id="view"><div class="status">Gib Rapla-User und Kurs ein, dann erscheint hier die Vorschau.</div></div>
+    <div id="view"><div class="status">Gib Rapla-User und Kurs ein und klicke auf „Vorschau laden“.</div></div>
     <p class="foot">Die Vorschau zeigt alle vier Kalender zugleich, wie sie mit deinen Einstellungen aufgeteilt werden.</p>
   </section>
 </main>
@@ -288,27 +295,47 @@ function persist() {
 }
 
 /* ---------- Vorschau laden ---------- */
-let timer = 0, ctrl = null;
-function changed() { persist(); renderUrls(); schedule(); }
-function schedule() { clearTimeout(timer); timer = setTimeout(load, 350); }
-
+// Es wird nie beim Tippen oder Anhaken geladen, sondern nur auf Knopfdruck (und einmal beim Oeffnen mit gespeicherten Daten).
+const USER_RE = /^[A-Za-z0-9._@+\-]{1,80}$/, FILE_RE = /^[A-Za-z0-9_\-]{1,40}$/;
+let ctrl = null, loadedKey = "", coolUntil = 0;
+const key = () => params().toString();
+function changed() { persist(); renderUrls(); markStale(); }
+function markStale() { $("stale").hidden = !(state.data && loadedKey && loadedKey !== key()); }
+function validate() {
+  const bad = !USER_RE.test(state.user.trim()) ? "Rapla-User fehlt oder enthält ungültige Zeichen."
+    : !FILE_RE.test(state.file.trim()) ? "Kurs fehlt oder ungültig (z. B. 25B6)." : "";
+  $("formErr").hidden = !bad; $("formErr").textContent = bad;
+  return !bad;
+}
+function friendly(r, text) {
+  if (r.status === 429) return `Zu viele Anfragen. Bitte in ${r.headers.get("Retry-After") || "einigen"} Sekunden erneut versuchen.`;
+  const t = text.trim();
+  if (!t || t.length > 300 || t.startsWith("<")) return r.status >= 500 ? "Der Server ist gerade nicht erreichbar. Bitte später erneut versuchen." : `Fehler ${r.status}`;
+  return t;
+}
 async function load() {
+  if (!validate()) return;
+  if (Date.now() < coolUntil) return;
+  coolUntil = Date.now() + 3000; // nicht mehrfach pro Sekunde fragen
+  $("load").disabled = $("reload").disabled = true;
+  setTimeout(() => { $("load").disabled = $("reload").disabled = false; }, 3000);
   if (ctrl) ctrl.abort();
-  if (!ready()) { state.data = null; renderNach(); return renderView(); }
   ctrl = new AbortController();
   setStatus("Lade Vorschau …");
+  const k = key();
   try {
-    const r = await fetch(`/preview.json?${params()}`, { signal: ctrl.signal });
-    if (!r.ok) throw new Error((await r.text()).trim() || `Fehler ${r.status}`);
-    state.data = await r.json();
+    const r = await fetch(`/preview.json?${k}`, { signal: ctrl.signal });
+    if (!r.ok) throw new Error(friendly(r, await r.text()));
+    state.data = await r.json(); loadedKey = k;
     const same = JSON.stringify(state.nachList) === JSON.stringify(state.data.nachklausuren);
     state.nachList = state.data.nachklausuren;
     if (!same) renderNach();
     focusFirstWeek();
+    markStale();
     renderView();
   } catch (e) {
     if (e.name === "AbortError") return;
-    state.data = null;
+    state.data = null; loadedKey = ""; markStale();
     setStatus(e.message === "Failed to fetch" ? "Server nicht erreichbar." : e.message, true);
   }
 }
@@ -388,7 +415,7 @@ function renderView() {
   const first = state.weekStart, last = addDays(first, 6);
   $("range").textContent = `${fmt(first, { day: "numeric", month: "short" })} – ${fmt(last, { day: "numeric", month: "short", year: "numeric" })}`;
   renderLegend();
-  if (!state.data) return setStatus(ready() ? "Lade Vorschau …" : "Gib Rapla-User und Kurs ein, dann erscheint hier die Vorschau.");
+  if (!state.data) return setStatus(ready() ? "Klicke auf „Vorschau laden“." : "Gib Rapla-User und Kurs ein und klicke auf „Vorschau laden“.");
   const evs = weekEvents().filter((e) => state.visible.has(e.cal));
   const timed = evs.filter((e) => !e.allDay), allDay = evs.filter((e) => e.allDay);
   const weekend = evs.some((e) => { const d = new Date(e.day).getDay(); return d === 0 || d === 6; });
@@ -448,12 +475,14 @@ for (const id of ["user", "file"]) {
   const input = $(id); input.value = state[id];
   input.addEventListener("input", () => { state[id] = input.value; changed(); renderNach(); });
 }
+$("form").addEventListener("submit", (e) => { e.preventDefault(); load(); });
+$("reload").addEventListener("click", load);
 const savedTheme = store.get("theme", null); if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 
 (async () => {
   try { state.options = await (await fetch("/builder/options.json")).json(); } catch { /* Formular bleibt leer */ }
   renderWahl(); renderOpt(); renderNach(); renderUrls(); renderView();
-  if (ready()) load();
+  if (ready() && USER_RE.test(state.user.trim()) && FILE_RE.test(state.file.trim())) load();
 })();
 </script>
 </body>

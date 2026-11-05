@@ -86,6 +86,11 @@ dann pushen (Image wird neu gebaut) oder bei gemounteter Datei `docker compose r
 - Termine werden unverändert durchgereicht (Serien mit `RRULE`/`EXDATE`, Zeitzonen). Einzige Korrektur:
   das doppelte `DTSTAMP` in jedem Rapla-Termin wird entfernt.
 - Ein `token=`-Parameter (alte URLs) wird ignoriert; der Query-String landet nicht im Zugriffslog.
+- Schutz vor Missbrauch (`rate_limit` in `config.yaml`, pro Client-IP, im Arbeitsspeicher): höchstens 240 Anfragen pro Minute
+  (sonst `429`), höchstens 20 echte Rapla-Abrufe pro 10 Minuten (Cache-Treffer zählen nicht); wer das reißt, ist 30 Minuten
+  gesperrt. Hinter dem Cloudflare Tunnel wird die IP aus `CF-Connecting-IP` gelesen (`client_ip_header`).
+- Unbekannte Kurse/User bei Rapla ergeben `404` mit Rapla-Meldung (10 Minuten zwischengespeichert, also keine Abruf-Flut durch
+  Tippfehler). Der Builder lädt nur auf Knopfdruck, nicht beim Tippen.
 
 ## Wahlfächer aller Studiengänge finden
 

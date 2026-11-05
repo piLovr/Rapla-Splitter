@@ -21,6 +21,7 @@ Query-Parameter (fuer alle vier Kalender gleich):
   token   wird ignoriert (alte URLs funktionieren weiter)
 """
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -28,6 +29,7 @@ import sys
 import threading
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 from datetime import timedelta
 from difflib import SequenceMatcher
@@ -60,6 +62,9 @@ def load_config(path):
         cfg = yaml.safe_load(f)
     cfg.setdefault("cache_seconds", 43200)
     cfg.setdefault("retry_seconds", 900)
+    cfg.setdefault("negative_cache_seconds", 600)
+    cfg.setdefault("client_ip_header", "CF-Connecting-IP")
+    cfg["rate_limit"] = {"requests_per_minute": 240, "upstream_per_10min": 20, "ban_seconds": 1800, **(cfg.get("rate_limit") or {})}
     cfg.setdefault("wahlfach_pool", [])
     cfg.setdefault("optional", {})
     cfg.setdefault("ignore", [])
@@ -307,24 +312,108 @@ def build_preview(text, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
 # Upstream mit Cache (veraltete Daten, wenn Rapla gerade nicht antwortet)
 # --------------------------------------------------------------------------
 _cache = {}  # file -> (zeitpunkt, text); user steckt bewusst nicht im Schluessel: ein Kurs wird hoechstens alle cache_seconds geholt
+_failed = {}  # file -> (zeitpunkt, UpstreamError): unbekannte Kurse nicht immer wieder bei Rapla erfragen
 _lock = threading.Lock()
 _key_locks = {}
+_ctx = threading.local()  # IP des Aufrufers, fuer das Abruf-Limit
 CFG = None
+
+
+class UpstreamError(Exception):
+    """Rapla hat den Kalender nicht geliefert; status = was wir dem Client antworten."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status, self.message = status, message
+
+
+class RateLimited(Exception):
+    def __init__(self, retry_after):
+        super().__init__(f"zu viele Anfragen, bitte in {retry_after} s erneut versuchen")
+        self.retry_after = retry_after
+
+
+class Limiter:
+    """Gleitende Fenster je Client-IP; wer das Abruf-Budget reisst, wird voruebergehend gesperrt."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reqs, self.fetches, self.bans = {}, {}, {}
+
+    def _prune(self, d, now, window):
+        if len(d) > 10000:
+            for k in [k for k, v in d.items() if not v or v[-1] < now - window]:
+                del d[k]
+
+    def _count(self, table, ip, now, window):
+        q = table.setdefault(ip, [])
+        while q and q[0] < now - window:
+            q.pop(0)
+        return q
+
+    def banned(self, ip, now):
+        until = self.bans.get(ip, 0)
+        return int(until - now) + 1 if until > now else 0
+
+    def request(self, ip, cfg, now=None):
+        """Wirft RateLimited, wenn die IP gesperrt ist oder zu oft anfragt."""
+        now = now or time.time()
+        with self.lock:
+            wait = self.banned(ip, now)
+            if wait:
+                raise RateLimited(wait)
+            limit = cfg["requests_per_minute"]
+            if limit:
+                q = self._count(self.reqs, ip, now, 60)
+                if len(q) >= limit:
+                    raise RateLimited(max(int(q[0] + 60 - now) + 1, 1))
+                q.append(now)
+            self._prune(self.reqs, now, 60)
+
+    def upstream(self, ip, cfg, now=None):
+        """Jeder echte Rapla-Abruf zaehlt; zu viele -> Sperre fuer ban_seconds."""
+        now = now or time.time()
+        with self.lock:
+            wait = self.banned(ip, now)
+            if wait:
+                raise RateLimited(wait)
+            limit = cfg["upstream_per_10min"]
+            if limit:
+                q = self._count(self.fetches, ip, now, 600)
+                if len(q) >= limit:
+                    self.bans[ip] = now + cfg["ban_seconds"]
+                    q.clear()
+                    print(f"sperre: {ip} fuer {cfg['ban_seconds']} s (zu viele Rapla-Abrufe)", file=sys.stderr, flush=True)
+                    raise RateLimited(cfg["ban_seconds"])
+                q.append(now)
+            self._prune(self.fetches, now, 600)
+            self._prune(self.bans, now, 0)
+
+
+LIMITER = Limiter()
 
 
 def fetch(user, file):
     key = file
-    now = time.time()
     with _lock:
         hit = _cache.get(key)
+        bad = _failed.get(key)
         key_lock = _key_locks.setdefault(key, threading.Lock())
-    if hit and now - hit[0] < CFG["cache_seconds"]:
+    if hit and time.time() - hit[0] < CFG["cache_seconds"]:
         return hit[1]
+    if bad and time.time() - bad[0] < CFG["negative_cache_seconds"] and not hit:
+        raise bad[1]
     with key_lock:  # gleichzeitige Anfragen auf denselben Kurs warten auf einen einzigen Abruf
         with _lock:
             hit = _cache.get(key)
         if hit and time.time() - hit[0] < CFG["cache_seconds"]:
             return hit[1]
+        try:
+            LIMITER.upstream(getattr(_ctx, "ip", "-"), CFG["rate_limit"])
+        except RateLimited:
+            if hit:
+                return hit[1]  # veraltete Kopie ist besser als nichts
+            raise
         url = f"{CFG['upstream']}?{urlencode({'user': user, 'file': file})}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "rapla-ical-proxy/1.0"})
@@ -335,13 +424,25 @@ def fetch(user, file):
             text = raw.decode("utf-8")
             if "BEGIN:VCALENDAR" not in text:
                 raise ValueError("Upstream lieferte keinen iCal-Feed")
-        except Exception:
-            if hit:  # veraltete Kopie ausliefern und Rapla erst nach retry_seconds wieder fragen
+        except Exception as e:  # noqa: BLE001
+            err = UpstreamError(502, "Rapla nicht erreichbar")
+            if isinstance(e, urllib.error.HTTPError) and e.code in (400, 403, 404):
+                try:
+                    detail = e.read(300).decode("utf-8", "replace").strip()
+                except Exception:  # noqa: BLE001
+                    detail = ""
+                err = UpstreamError(404, detail or "Kalender bei Rapla nicht gefunden")
+                with _lock:
+                    if len(_failed) >= 256:
+                        _failed.pop(min(_failed, key=lambda k: _failed[k][0]))
+                    _failed[key] = (time.time(), err)
+            elif hit:  # veraltete Kopie ausliefern und Rapla erst nach retry_seconds wieder fragen
                 with _lock:
                     _cache[key] = (time.time() - CFG["cache_seconds"] + CFG["retry_seconds"], hit[1])
                 return hit[1]
-            raise
+            raise err from e
         with _lock:
+            _failed.pop(key, None)
             if len(_cache) >= 256:
                 _cache.pop(min(_cache, key=lambda k: _cache[k][0]))
             _cache[key] = (time.time(), text)
@@ -396,12 +497,37 @@ class Handler(BaseHTTPRequestHandler):
         resolve_wahl(wahl, CFG["wahlfach_pool"])  # Wahlfach-Fehler (400) vor dem Upstream-Abruf melden
         return user, file, wahl, enabled, split("nach")
 
+    def client_ip(self):
+        """Hinter dem Cloudflare-Tunnel steht die echte IP im Header; nur gueltige IPs werden uebernommen."""
+        raw = (self.headers.get(CFG["client_ip_header"]) or "").split(",")[0].strip() if CFG["client_ip_header"] else ""
+        try:
+            return str(ipaddress.ip_address(raw))
+        except ValueError:
+            return self.client_address[0]
+
     def do_GET(self):
+        try:
+            self._get()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:  # noqa: BLE001  # nie die Verbindung kommentarlos fallen lassen (Cloudflare zeigt sonst 502)
+            print(f"fehler: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            try:
+                self._send(500, "interner Fehler\n")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _get(self):
         u = urlparse(self.path)
         if len(self.path) > 2000:
             return self._send(414, "URI zu lang\n")
         if u.path == "/health":
             return self._send(200, "ok\n")
+        _ctx.ip = self.client_ip()
+        try:
+            LIMITER.request(_ctx.ip, CFG["rate_limit"])
+        except RateLimited as e:
+            return self._send(429, f"{e}\n", extra={"Retry-After": str(e.retry_after)})
         if u.path == "/":
             return self._send(302, "", extra={"Location": REPO_URL})
         if u.path in ("/builder", "/builder/"):
@@ -418,6 +544,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, f"{e}\n")
         try:
             text = fetch(user, file)
+        except RateLimited as e:
+            return self._send(429, f"{e}\n", extra={"Retry-After": str(e.retry_after)})
+        except UpstreamError as e:
+            if e.status >= 500:
+                print(f"upstream-fehler: {e.message}", file=sys.stderr, flush=True)
+            return self._send(e.status, f"{e.message}\n")
         except Exception as e:  # noqa: BLE001
             print(f"upstream-fehler: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             return self._send(502, "Rapla nicht erreichbar\n")

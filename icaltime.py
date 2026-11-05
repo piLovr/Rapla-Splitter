@@ -46,18 +46,28 @@ def exdate_times(values):
     return out
 
 
+def _until(value):
+    """UNTIL kann Datum (20261231), lokal (20261231T120000) oder UTC (...Z) sein."""
+    m = re.match(r"(\d{8})(?:T(\d{6}))?(Z?)", value)
+    if not m:
+        return None
+    d = datetime.strptime(m.group(1) + (m.group(2) or "235959"), "%Y%m%d%H%M%S")
+    return utc_to_berlin(d) if m.group(3) else d
+
+
 def expansions(rrule, exdates, start):
     """Wiederholungen eines Rapla-Serientermins (FREQ=DAILY/WEEKLY mit COUNT/UNTIL/INTERVAL; Rapla nutzt nur das)
-    -> Liste lokaler Startzeiten ohne EXDATE-Ausnahmen."""
+    -> Liste lokaler Startzeiten ohne EXDATE-Ausnahmen. Unverstaendliche Regeln ergeben nur den Starttermin."""
     rule = dict(p.split("=", 1) for p in rrule.split(";") if "=" in p)
     step = {"DAILY": 1, "WEEKLY": 7}.get(rule.get("FREQ"))
+    try:
+        step *= max(int(rule.get("INTERVAL", 1)), 1)
+        count = int(rule["COUNT"]) if "COUNT" in rule else None
+        until = _until(rule["UNTIL"]) if "UNTIL" in rule else None
+    except (TypeError, ValueError):
+        return [start]
     if not step:
         return [start]
-    step *= int(rule.get("INTERVAL", 1))
-    count = int(rule["COUNT"]) if "COUNT" in rule else None
-    until = None
-    if "UNTIL" in rule:
-        until = utc_to_berlin(datetime.strptime(rule["UNTIL"][:15].ljust(15, "0")[:15], "%Y%m%dT%H%M%S"))
     out, i = [], 0
     while (count is None or i < count) and i < 1000:
         t = start + timedelta(days=step * i)

@@ -11,6 +11,21 @@ upstream: "https://rapla.dhbw.de/rapla/ical"
 cache_seconds: 43200
 retry_seconds: 900
 
+# Unbekannte Kurse/User (Rapla antwortet 404) werden so lange nicht erneut bei Rapla erfragt.
+negative_cache_seconds: 600
+
+# Schutz vor Missbrauch (pro Client-IP, im Arbeitsspeicher). 0 schaltet ein Limit ab.
+# requests_per_minute: alle Anfragen an den Proxy (429 bei Ueberschreitung)
+# upstream_per_10min:  echte Rapla-Abrufe (Cache-Treffer zaehlen nicht); wer mehr braucht, ist fuer ban_seconds gesperrt
+rate_limit:
+  requests_per_minute: 240
+  upstream_per_10min: 20
+  ban_seconds: 1800
+
+# Hinter dem Cloudflare Tunnel steht die echte Client-IP in diesem Header (leer = Verbindungs-IP nutzen).
+# Nur sinnvoll, wenn der Proxy ausschliesslich ueber den Tunnel erreichbar ist.
+client_ip_header: CF-Connecting-IP
+
 # Wahlfach-Pool: aus diesen Faechern waehlt man genau eins (Parameter wahl=...).
 # Eintrag = Teil des Titels in Rapla. Leerzeichen, Gross-/Kleinschreibung und
 # Umlaute sind beim Vergleich egal. Zum Semesterwechsel einfach anpassen.
