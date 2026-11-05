@@ -35,9 +35,7 @@ mit der Liste der gültigen Fächer. Groß-/Kleinschreibung, Leerzeichen und Uml
 ## Installation
 
 ```bash
-tar xzf rapla-proxy.tar.gz && cd rapla-proxy
-cp .env.example .env
-docker compose up -d --build  # alternativ: docker-compose up -d --build
+docker compose up -d   # zieht ghcr.io/pilovr/rapla-splitter:latest (wird bei jedem Push auf main gebaut)
 ```
 
 Test auf dem Rechner, auf dem er läuft (das prüft auch, ob Rapla von dort erreichbar ist):
@@ -48,22 +46,23 @@ curl -s "http://127.0.0.1:8000/semester.ics?user=DEIN%40USER&file=25B6" | head
 
 ## Cloudflare Tunnel
 
-Im Zero-Trust-Dashboard unter Networks → Tunnels einen Tunnel anlegen und einen Public Hostname
-`cal.deinedomain.de` auf Service `http://rapla-proxy:8000` setzen.
+Der Tunnel ist nicht Teil dieses Projekts. Der Container hängt im Docker-Netz deines `cloudflared`
+(in `docker-compose.yml` unter `networks` den Netznamen anpassen, `docker network ls`). Im Zero-Trust-Dashboard
+einen Public Hostname `cal.deinedomain.de` auf Service `http://rapla-proxy:8000` setzen.
 
-- **Neuer Tunnel:** Token in `.env` als `TUNNEL_TOKEN` eintragen und mit
-  `docker compose --profile tunnel up -d` starten.
-- **Vorhandener Tunnel (läuft schon):** Hostname dort ergänzen. Läuft `cloudflared` in einem anderen
-  Docker-Netz, nimm als Service `http://<IP-des-Hosts>:8000` (der Port ist an `127.0.0.1` gebunden,
-  dann musst du in `docker-compose.yml` die Bindung auf `0.0.0.0` oder das Docker-Gateway ändern).
 - **Kein Cloudflare Access davorschalten**, SOGo/Nextcloud können sich dort nicht anmelden. Der Proxy hat keine
   Zugriffskontrolle (nur Kurs und Rapla-User in der URL). Falls ein Abo-Abruf blockiert wird: in Cloudflare unter Security → WAF
   eine Skip-Regel für den Hostnamen anlegen, Bot-Schutz kann Kalender-Clients abweisen.
 
+## Portainer
+
+Stack mit der `docker-compose.yml` anlegen (Image wird von GHCR gezogen, nach neuem Push "Pull and redeploy").
+Die `config.yaml` ist im Image eingebaut; für eigene Werte die Volume-Zeile in der Compose-Datei aktivieren.
+
 ## Neues Semester / neue Wahlfächer
 
 `config.yaml` öffnen, unter `wahlfach_pool` die neuen Fächer eintragen (Teil des Rapla-Titels),
-dann `docker compose restart rapla-proxy`. Weitere optionale Fächer wie CCNA gehören unter `optional`
+dann pushen (Image wird neu gebaut) oder bei gemounteter Datei `docker compose restart rapla-proxy`. Weitere optionale Fächer wie CCNA gehören unter `optional`
 (`schluessel: Titelteil`, aktiv per `?schluessel=1`).
 
 ## Verhalten

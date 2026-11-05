@@ -1,0 +1,59 @@
+# Rapla iCal Filter Proxy – Konfiguration
+
+# Feste Upstream-Adresse. Nur "user" und "file" kommen aus der Proxy-URL,
+# der Host kann also nicht per URL umgebogen werden.
+upstream: "https://rapla.dhbw.de/rapla/ical"
+
+# So lange wird der Rapla-Feed zwischengespeichert (Sekunden).
+# Ist Rapla nicht erreichbar, wird die letzte gute Kopie ausgeliefert.
+cache_seconds: 900
+
+# Wahlfach-Pool: aus diesen Faechern waehlt man genau eins (Parameter wahl=...).
+# Eintrag = Teil des Titels in Rapla. Leerzeichen, Gross-/Kleinschreibung und
+# Umlaute sind beim Vergleich egal. Zum Semesterwechsel einfach anpassen.
+# Faecher, die hier NICHT stehen, gelten als Pflichtfach und bleiben immer drin.
+wahlfach_pool:
+  - Signale und Systeme
+  - Digitale Währungssysteme
+  - Geschäftsprozesse
+  - Webengineering 3
+  - Linux Basics
+  # 4. Semester (Wahlmodul 2. Studienjahr)
+  - OO Best Practice
+  - Workflow
+  - Anwendungen der Robotik
+
+# Optionale Zusatzfaecher: fehlen standardmaessig, mit ?<schluessel>=1 sind sie dabei.
+# (gilt fuer Vorlesungen und die passende Klausur)
+optional:
+  ccna: CCNA
+
+# Termine, die in KEINEM Kalender landen sollen (Teil des Titels, Schreibweise egal).
+# Alles andere, was weder Vorlesung noch Pruefung ist, kommt in semester.ics.
+ignore:
+  - Neujahr
+  - Heilige Drei Koenige
+  - Fschingsdienstag
+  - Faschingsdienstag
+  - Karfreitag
+  - Ostermontag
+  - Tag der Arbeit
+  - Christi Himmelfahrt
+  - Pfingstmontag
+  - Fronleichnam
+  - Tag der Deutschen Einheit
+  - Allerheiligen
+  - Buss- und Bettag
+  - Weihnachten
+  - Feiertag
+  - Beginn Theorie
+  - Klausurwoche
+
+# Zuordnung der Rapla-Kategorien (sind die Farben im Rapla-Kalender)
+categories:
+  lecture: Lehrveranstaltung   # grau
+  exam: Prüfung                # rot
+  other: Sonstiger Termin      # blau; 
+
+# Pruefungen, deren Titel das enthaelt, landen in nachklausuren.ics
+nachklausur_match: "geladene"

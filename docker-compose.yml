@@ -1,12 +1,14 @@
 services:
   rapla-proxy:
-    build: .
+    image: ghcr.io/pilovr/rapla-splitter:latest
+    # Lokal bauen statt Image ziehen:  build: .
     container_name: rapla-proxy
     restart: unless-stopped
-    volumes:
-      # config.yaml liegt ausserhalb des Images: Aenderung + "docker compose restart rapla-proxy" reicht
-      - ./config.yaml:/app/config.yaml:ro
-    # Nur lokal erreichbar. Nach aussen geht es ueber den Cloudflare Tunnel.
+    # Optional: eigene config.yaml statt der im Image eingebauten:
+    # volumes:
+    #   - ./config.yaml:/app/config.yaml:ro
+    networks: [tunnel]
+    # Nur lokal erreichbar (zum Testen). Der Tunnel nutzt das Docker-Netz: http://rapla-proxy:8000
     ports:
       - "127.0.0.1:8000:8000"
     read_only: true
@@ -14,15 +16,7 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # Optional: eigener Cloudflare Tunnel. Starten mit:  docker compose --profile tunnel up -d
-  # Wenn du schon einen Tunnel hast, brauchst du das nicht (siehe README).
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: rapla-cloudflared
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?bitte in .env setzen}
-    depends_on:
-      - rapla-proxy
+networks:
+  tunnel:
+    external: true
+    name: cloudflared_default   # Name des Docker-Netzes, in dem dein cloudflared-Container haengt
