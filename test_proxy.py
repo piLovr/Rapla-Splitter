@@ -40,9 +40,10 @@ class Filtering(unittest.TestCase):
         self.assertEqual(kept + len(dropped), total)
         self.assertTrue(all(any(x in d for x in ("Karfreitag", "Ostermontag", "Fschingsdienstag", "Beginn Theorie", "Klausurwoche")) for d in dropped), dropped)
 
-    def test_semester_nur_blau_mit_ort(self):
-        s = summaries(feed("semester"))
-        self.assertEqual(sorted(x.split("   ")[0] for x in s), ["Programmieren - Übungstermin", "Semesterstart-Besprechung"])
+    def test_semester_enthaelt_infoveranstaltung(self):
+        s = " ".join(summaries(feed("semester")))
+        for expected in ("Semesterstart-Besprechung", "Programmieren - Übungstermin", "Infoveranstaltung"):
+            self.assertIn(expected, s)
 
     def test_feiertage_nirgends(self):
         for cal in app.CALENDARS:
@@ -125,7 +126,6 @@ class Http(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         app.CFG = CFG
-        app.TOKEN = "t" * 24
         app.fetch = lambda user, file: TEXT
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         cls.port = cls.srv.server_address[1]
@@ -155,9 +155,9 @@ class Http(unittest.TestCase):
         self.assertNotIn("CCNA", self.get(f"/vorlesungen.ics?{self.base}")[2])
         self.assertIn("CCNA", self.get(f"/vorlesungen.ics?{self.base}&ccna=1")[2])
 
-    def test_token(self):
-        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 403)
-        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6&token=falsch")[0], 403)
+    def test_token_egal(self):
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6")[0], 200)
+        self.assertEqual(self.get("/vorlesungen.ics?user=a&file=25B6&token=irgendwas")[0], 200)
 
     def test_ungueltige_parameter(self):
         t = "t" * 24

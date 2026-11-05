@@ -5,28 +5,28 @@ Teilt den Rapla-Feed (DHBW) in vier Kalender auf und filtert dein Wahlfach herau
 | URL | Inhalt |
 |---|---|
 | `/vorlesungen.ics` | Lehrveranstaltungen (graue Termine) |
-| `/semester.ics` | blaue Termine **mit Ort** (z. B. Semesterstart-Besprechung) |
+| `/semester.ics` | alles Übrige (Infoveranstaltungen, Semesterstart-Besprechung …) |
 | `/klausuren.ics` | Prüfungen, außer "nur geladene" |
 | `/nachklausuren.ics` | Prüfungen für Geladene |
 
-Feiertage und die 07:30–08:00-Pseudo-Ganztägigen ("Beginn Theorie", "Klausurwoche") fehlen überall:
-blaue Termine ohne Ort werden verworfen.
+Feiertage und die Pseudo-Ganztägigen ("Beginn Theorie", "Klausurwoche") fehlen überall; sie stehen unter
+`ignore` in `config.yaml`. Alles andere, was weder Vorlesung noch Prüfung ist, landet in `semester.ics`.
+Römische Zahlen gelten als arabische (`Webengineering 3` = `Webengineering III`).
 
 ## Parameter
 
 | Parameter | Pflicht | Bedeutung |
 |---|---|---|
-| `token` | ja | Muss zu `ICAL_PROXY_TOKEN` passen |
 | `user` | ja | Rapla-User, wird an Rapla durchgereicht (`@` darf als `%40` kodiert sein) |
 | `file` | ja | Rapla-Kurs, z. B. `25B6` |
-| `wahl` | nein | Stichwort deines Wahlfachs, z. B. `Signale`, `Währung`, `Web`, `Geschäft`, `Linux` |
+| `wahl` | nein | Stichwort deines Wahlfachs, z. B. `Signale`, `Währung`, `Web`, `Geschäft`, `Linux`, `Robotik`, `Workflow`, `OO` |
 | `ccna` | nein | `ccna=1` nimmt CCNA (Vorlesung + Klausur) mit auf, sonst fehlt es |
 
 Beispiel:
 
 ```
-https://cal.deinedomain.de/vorlesungen.ics?user=DEIN%40USER&file=25B6&wahl=Signale&token=DEIN_TOKEN
-https://cal.deinedomain.de/klausuren.ics?user=DEIN%40USER&file=25B6&wahl=Signale&token=DEIN_TOKEN
+https://cal.deinedomain.de/vorlesungen.ics?user=DEIN%40USER&file=25B6&wahl=Signale
+https://cal.deinedomain.de/klausuren.ics?user=DEIN%40USER&file=25B6&wahl=Signale
 ```
 
 Das Stichwort muss genau ein Wahlfach aus `wahlfach_pool` treffen. Sonst gibt es einen Fehler (HTTP 400)
@@ -37,14 +37,13 @@ mit der Liste der gültigen Fächer. Groß-/Kleinschreibung, Leerzeichen und Uml
 ```bash
 tar xzf rapla-proxy.tar.gz && cd rapla-proxy
 cp .env.example .env
-openssl rand -hex 24          # Ausgabe als ICAL_PROXY_TOKEN in .env eintragen
 docker compose up -d --build  # alternativ: docker-compose up -d --build
 ```
 
 Test auf dem Rechner, auf dem er läuft (das prüft auch, ob Rapla von dort erreichbar ist):
 
 ```bash
-curl -s "http://127.0.0.1:8000/semester.ics?user=DEIN%40USER&file=25B6&token=DEIN_TOKEN" | head
+curl -s "http://127.0.0.1:8000/semester.ics?user=DEIN%40USER&file=25B6" | head
 ```
 
 ## Cloudflare Tunnel
@@ -57,8 +56,8 @@ Im Zero-Trust-Dashboard unter Networks → Tunnels einen Tunnel anlegen und eine
 - **Vorhandener Tunnel (läuft schon):** Hostname dort ergänzen. Läuft `cloudflared` in einem anderen
   Docker-Netz, nimm als Service `http://<IP-des-Hosts>:8000` (der Port ist an `127.0.0.1` gebunden,
   dann musst du in `docker-compose.yml` die Bindung auf `0.0.0.0` oder das Docker-Gateway ändern).
-- **Kein Cloudflare Access davorschalten**, SOGo/Nextcloud können sich dort nicht anmelden. Der Schutz
-  ist der Token in der URL. Falls ein Abo-Abruf blockiert wird: in Cloudflare unter Security → WAF
+- **Kein Cloudflare Access davorschalten**, SOGo/Nextcloud können sich dort nicht anmelden. Der Proxy hat keine
+  Zugriffskontrolle (nur Kurs und Rapla-User in der URL). Falls ein Abo-Abruf blockiert wird: in Cloudflare unter Security → WAF
   eine Skip-Regel für den Hostnamen anlegen, Bot-Schutz kann Kalender-Clients abweisen.
 
 ## Neues Semester / neue Wahlfächer
@@ -72,7 +71,7 @@ dann `docker compose restart rapla-proxy`. Weitere optionale Fächer wie CCNA ge
 - Rapla wird höchstens alle 15 Minuten abgefragt. Ist Rapla nicht erreichbar, kommt die letzte gute Kopie.
 - Termine werden unverändert durchgereicht (Serien mit `RRULE`/`EXDATE`, Zeitzonen). Einzige Korrektur:
   das doppelte `DTSTAMP` in jedem Rapla-Termin wird entfernt.
-- Der Token landet nicht im Zugriffslog.
+- Ein `token=`-Parameter (alte URLs) wird ignoriert; der Query-String landet nicht im Zugriffslog.
 
 ## Tests
 

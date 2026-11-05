@@ -18,17 +18,42 @@ wahlfach_pool:
   - Geschäftsprozesse
   - Webengineering 3
   - Linux Basics
+  # 4. Semester (Wahlmodul 2. Studienjahr)
+  - OO Best Practice
+  - Workflow
+  - Anwendungen der Robotik
 
 # Optionale Zusatzfaecher: fehlen standardmaessig, mit ?<schluessel>=1 sind sie dabei.
 # (gilt fuer Vorlesungen und die passende Klausur)
 optional:
   ccna: CCNA
 
+# Termine, die in KEINEM Kalender landen sollen (Teil des Titels, Schreibweise egal).
+# Alles andere, was weder Vorlesung noch Pruefung ist, kommt in semester.ics.
+ignore:
+  - Neujahr
+  - Heilige Drei Koenige
+  - Fschingsdienstag
+  - Faschingsdienstag
+  - Karfreitag
+  - Ostermontag
+  - Tag der Arbeit
+  - Christi Himmelfahrt
+  - Pfingstmontag
+  - Fronleichnam
+  - Tag der Deutschen Einheit
+  - Allerheiligen
+  - Buss- und Bettag
+  - Weihnachten
+  - Feiertag
+  - Beginn Theorie
+  - Klausurwoche
+
 # Zuordnung der Rapla-Kategorien (sind die Farben im Rapla-Kalender)
 categories:
   lecture: Lehrveranstaltung   # grau
   exam: Prüfung                # rot
-  other: Sonstiger Termin      # blau; kommt nur mit Ort in semester.ics
+  other: Sonstiger Termin      # blau; 
 
 # Pruefungen, deren Titel das enthaelt, landen in nachklausuren.ics
 nachklausur_match: "geladene"

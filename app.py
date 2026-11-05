@@ -3,19 +3,19 @@
 
 Holt den iCal-Feed von Rapla (DHBW) und teilt ihn in vier Kalender auf:
   /vorlesungen.ics    Lehrveranstaltungen
-  /semester.ics       "Sonstiger Termin" MIT Ort (z. B. Semesterstart-Besprechung)
+  /semester.ics       alles Uebrige (Infoveranstaltungen, Semesterstart ...), ausser Feiertage
+                      & Co. (config.yaml: ignore)
   /klausuren.ics      Pruefungen (ohne "geladene")
   /nachklausuren.ics  Pruefungen fuer Geladene
 
 Query-Parameter:
-  token   Pflicht, muss zu ICAL_PROXY_TOKEN passen
+  token   optional, wird ignoriert (alte URLs mit Token funktionieren weiter)
   user    Pflicht, Rapla-User (wird 1:1 an Rapla durchgereicht)
   file    Pflicht, Rapla-Kurs (z. B. 25B6)
   wahl    Stichwort des gewaehlten Wahlfachs, z. B. wahl=Signale
   ccna    ccna=1 nimmt optionale Faecher mit auf (Schluessel stehen in config.yaml)
 """
 import argparse
-import hmac
 import os
 import re
 import sys
@@ -48,6 +48,7 @@ def load_config(path):
     cfg.setdefault("cache_seconds", 900)
     cfg.setdefault("wahlfach_pool", [])
     cfg.setdefault("optional", {})
+    cfg.setdefault("ignore", [])
     cfg["categories"] = {
         "lecture": "Lehrveranstaltung",
         "exam": "Prüfung",
@@ -58,9 +59,14 @@ def load_config(path):
     return cfg
 
 
+ROMAN = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
+ROMAN_RE = re.compile(r"(?<![a-z0-9])(" + "|".join(sorted(ROMAN, key=len, reverse=True)) + r")(?![a-z0-9])")
+
+
 def norm(s):
-    """Klein, ohne Umlaute/Sonderzeichen/Leerzeichen: 'Web Engineering' == 'webengineering'."""
-    s = s.casefold()
+    """Klein, ohne Umlaute/Sonderzeichen/Leerzeichen; roemische Zahlen werden arabisch:
+    'Web Engineering III' == 'webengineering3'."""
+    s = ROMAN_RE.sub(lambda m: ROMAN[m.group(1)], s.casefold())
     for a, b in (("ä", "a"), ("ö", "o"), ("ü", "u"), ("ß", "ss")):
         s = s.replace(a, b)
     s = unicodedata.normalize("NFKD", s)
@@ -147,9 +153,10 @@ def classify(ev, cfg):
         if norm(cfg["nachklausur_match"]) in norm(ev["summary"]):
             return "nachklausuren"
         return "klausuren"
-    if cats["other"].casefold() in ev["categories"] and ev["location"].strip():
-        return "semester"
-    return None  # Feiertage, "Beginn Theorie", "Klausurwoche" (kein Ort) -> raus
+    title = norm(ev["summary"])
+    if any(norm(p) in title for p in cfg["ignore"]):
+        return None  # Feiertage, "Beginn Theorie", "Klausurwoche" -> raus
+    return "semester"  # alles Uebrige, damit kein Termin durchrutscht
 
 
 def resolve_wahl(keywords, pool):
@@ -275,8 +282,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, "nicht gefunden\n")
         q = parse_qs(u.query)
         first = lambda k: (q.get(k) or [""])[0]
-        if not hmac.compare_digest(first("token").encode(), TOKEN.encode()):
-            return self._send(403, "verboten\n")
         user, file = first("user"), first("file")
         if not USER_RE.fullmatch(user) or not FILE_RE.fullmatch(file):
             return self._send(400, "user und file muessen angegeben und gueltig sein\n")
@@ -297,11 +302,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 Handler.do_HEAD = Handler.do_GET
-TOKEN = ""
 
 
 def main():
-    global CFG, TOKEN
+    global CFG
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=os.environ.get("CONFIG_FILE", "config.yaml"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
@@ -320,9 +324,6 @@ def main():
         sys.stdout.write(build_feed(text, args.cal, "TEST", args.wahl.split(","), enabled, CFG))
         return
 
-    TOKEN = os.environ.get("ICAL_PROXY_TOKEN", "")
-    if len(TOKEN) < 16:
-        sys.exit("ICAL_PROXY_TOKEN fehlt oder ist kuerzer als 16 Zeichen.")
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
     print(f"lauscht auf {args.host}:{args.port}", flush=True)

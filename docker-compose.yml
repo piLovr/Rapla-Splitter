@@ -3,8 +3,6 @@ services:
     build: .
     container_name: rapla-proxy
     restart: unless-stopped
-    environment:
-      ICAL_PROXY_TOKEN: ${ICAL_PROXY_TOKEN:?bitte in .env setzen}
     volumes:
       # config.yaml liegt ausserhalb des Images: Aenderung + "docker compose restart rapla-proxy" reicht
       - ./config.yaml:/app/config.yaml:ro
