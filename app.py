@@ -185,10 +185,10 @@ def wants_nach(ev, nach_keywords):
     return any(norm(k) == "alle" or (norm(k) and norm(k) in title) for k in nach_keywords)
 
 
-def assign(ev, chosen, enabled_opts, nach_keywords, cfg):
+def assign(ev, chosen, enabled_opts, nach_keywords, cfg, pool=None):
     """Genau ein Kalender pro Termin: nichts geht verloren, nichts doppelt."""
     kind = classify(ev, cfg)
-    if kind == "rest" or not selected(ev, chosen, enabled_opts, cfg):
+    if kind == "rest" or not selected(ev, chosen, enabled_opts, cfg, pool):
         return "rest"
     if kind == "nachklausur":
         return "klausuren" if wants_nach(ev, nach_keywords) else "rest"
@@ -201,11 +201,11 @@ def resolve_wahl(keywords, pool):
         k = norm(kw)
         if not k:
             continue
-        hits = [e for e in pool if k in norm(e)]
+        hits = [e for e in pool if norm(e) == k] or [e for e in pool if k in norm(e)]  # voller Name schlaegt Teilwort
         if len(hits) != 1:
-            opts = ", ".join(pool)
+            opts = ", ".join(pool) or "keine"
             why = "passt auf kein Wahlfach" if not hits else "passt auf mehrere Wahlfaecher"
-            raise ValueError(f"wahl='{kw}' {why}. Moegliche Fachnamen (config.yaml): {opts}")
+            raise ValueError(f"wahl='{kw}' {why}. Moegliche Wahlfaecher dieses Kurses: {opts}")
         chosen.add(hits[0])
     return chosen
 
@@ -224,10 +224,10 @@ def title_has(name, title):
     return False
 
 
-def selected(ev, chosen, enabled_opts, cfg):
+def selected(ev, chosen, enabled_opts, cfg, pool=None):
     title = norm(ev["summary"])
     if chosen:
-        matched = {e for e in cfg["wahlfach_pool"] if title_has(e, title)}
+        matched = {e for e in (cfg["wahlfach_pool"] if pool is None else pool) if title_has(e, title)}
         if matched and not (matched & chosen):
             return False
     for key, pattern in cfg["optional"].items():
@@ -236,9 +236,46 @@ def selected(ev, chosen, enabled_opts, cfg):
     return True
 
 
+_groups_cache = {}
+
+
+def course_groups(text, cfg):
+    """Wahlfach-Gruppen dieses Kurses: automatisch erkannt (parallel laufende Faecher, siehe wahlfaecher.py),
+    dazu Eintraege aus wahlfach_pool, die im Plan vorkommen. -> Liste von Namenslisten."""
+    key = hash(text)
+    if key in _groups_cache:
+        return _groups_cache[key]
+    import wahlfaecher  # erst hier: wahlfaecher importiert seinerseits app
+
+    groups, seen = [], set()
+    for group in wahlfaecher.elective_groups(wahlfaecher.lectures(text, cfg["ignore"])):
+        names = []
+        for title, _n in group:
+            name = wahlfaecher.canonical(title)  # 'Echtzeitsysteme (WM1)' -> 'Echtzeitsysteme', passt dann auch auf die Klausur
+            name = name if len(norm(name)) >= 4 else wahlfaecher.clean_title(title)
+            if norm(name) not in seen:
+                seen.add(norm(name))
+                names.append(name)
+        if len(names) > 1:
+            groups.append(names)
+    titles = {norm(parse_event(b)["summary"]) for k, b in parse_items(text) if k == "event"}
+    extra = [e for e in cfg["wahlfach_pool"] if norm(e) not in seen and any(title_has(e, t) for t in titles)]
+    if extra:
+        groups.append(extra)
+    if len(_groups_cache) > 64:
+        _groups_cache.clear()
+    _groups_cache[key] = groups
+    return groups
+
+
+def course_pool(text, cfg):
+    return [n for g in course_groups(text, cfg) for n in g]
+
+
 def build_feed(text, cal, file_label, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
     """Gibt den gefilterten iCal-Text fuer einen der vier Kalender zurueck."""
-    chosen = resolve_wahl(wahl_keywords, cfg["wahlfach_pool"])
+    pool = course_pool(text, cfg)
+    chosen = resolve_wahl(wahl_keywords, pool)
     out, header_done = [], False
     for kind, data in parse_items(text):
         if kind == "raw":
@@ -250,7 +287,7 @@ def build_feed(text, cal, file_label, wahl_keywords, enabled_opts, cfg, nach_key
                 header_done = True
             continue
         ev = parse_event(data)
-        if assign(ev, chosen, enabled_opts, nach_keywords, cfg) != cal:
+        if assign(ev, chosen, enabled_opts, nach_keywords, cfg, pool) != cal:
             continue
         out.extend(dedupe_dtstamp(data))
     return "".join(out)
@@ -272,7 +309,9 @@ def build_preview(text, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
     `kind` (classify), `pool` (passende Wahlfaecher), `opts` (passende Optionals) und `nach` (passende
     Nachklausur-Stichworte). Damit ordnet der Builder beim An-/Abwaehlen selbst neu zu, ohne neue Anfrage.
     """
-    chosen = resolve_wahl(wahl_keywords, cfg["wahlfach_pool"])
+    groups = course_groups(text, cfg)
+    pool = [n for g in groups for n in g]
+    chosen = resolve_wahl(wahl_keywords, pool)
     items, nach = [], {}
     for kind, block in parse_items(text):
         if kind == "event":
@@ -287,9 +326,9 @@ def build_preview(text, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
         info = {
             "title": title,
             "location": ev["location"].strip(),
-            "cal": assign(ev, chosen, enabled_opts, nach_keywords, cfg),
+            "cal": assign(ev, chosen, enabled_opts, nach_keywords, cfg, pool),
             "kind": classify(ev, cfg),
-            "pool": [e for e in cfg["wahlfach_pool"] if title_has(e, norm_title)],
+            "pool": [e for e in pool if title_has(e, norm_title)],
             "opts": [k for k, p in cfg["optional"].items() if norm(p) in norm_title],
             "nach": [k for k in nach if norm(k) and norm(k) in norm_title],
         }
@@ -318,6 +357,7 @@ def build_preview(text, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
     return {
         "events": events,
         "nachklausuren": [{"keyword": k, "title": t} for k, t in sorted(nach.items())],
+        "wahlfaecher": groups,
     }
 
 
@@ -506,9 +546,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("user und file muessen angegeben und gueltig sein")
         split = lambda key: [k.strip() for v in q.get(key, []) for k in v.split(",") if k.strip()]
         enabled = {k for k in CFG["optional"] if first(k).lower() in TRUTHY}
-        wahl = split("wahl")
-        resolve_wahl(wahl, CFG["wahlfach_pool"])  # Wahlfach-Fehler (400) vor dem Upstream-Abruf melden
-        return user, file, wahl, enabled, split("nach")
+        return user, file, split("wahl"), enabled, split("nach")
 
     def client_ip(self):
         """Hinter dem Cloudflare-Tunnel steht die echte IP im Header; nur gueltige IPs werden uebernommen."""
@@ -566,6 +604,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             print(f"upstream-fehler: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             return self._send(502, "Rapla nicht erreichbar\n")
+        try:
+            resolve_wahl(wahl, course_pool(text, CFG))  # Wahlfaecher haengen vom Kurs ab, also erst nach dem Abruf pruefbar
+        except ValueError as e:
+            return self._send(400, f"{e}\n")
         if not m:
             body = json.dumps(build_preview(text, wahl, enabled, CFG, nach), ensure_ascii=False)
             return self._send(200, body, "application/json; charset=utf-8", {"Cache-Control": "no-store"})

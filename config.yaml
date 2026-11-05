@@ -26,10 +26,10 @@ rate_limit:
 # Nur sinnvoll, wenn der Proxy ausschliesslich ueber den Tunnel erreichbar ist.
 client_ip_header: CF-Connecting-IP
 
-# Wahlfach-Pool: aus diesen Faechern waehlt man genau eins (Parameter wahl=...).
-# Eintrag = Teil des Titels in Rapla. Leerzeichen, Gross-/Kleinschreibung und
-# Umlaute sind beim Vergleich egal. Zum Semesterwechsel einfach anpassen.
-# Faecher, die hier NICHT stehen, gelten als Pflichtfach und bleiben immer drin.
+# Wahlfaecher werden pro Kurs automatisch erkannt (Faecher, die im selben Kurs parallel laufen, siehe wahlfaecher.py).
+# Hier nur Ergaenzungen fuer Faecher, die die Erkennung nicht findet (z. B. weil Rapla noch keine Termine hat).
+# Eintrag = Teil des Titels in Rapla; Leerzeichen, Gross-/Kleinschreibung, Umlaute und roemische Zahlen sind egal.
+# Ein Eintrag zaehlt nur fuer Kurse, in deren Plan er vorkommt.
 wahlfach_pool:
   - Signale und Systeme
   - Digitale Währungssysteme

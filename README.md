@@ -14,7 +14,9 @@ Der Kalender `/nachklausuren.ics` gibt es nicht mehr: Nachklausuren stehen nur i
 per `nach=` auswählst, sonst in `rest.ics`.
 
 Die Basis-URL ohne Pfad leitet auf dieses Repo weiter. **Unter `/builder` gibt es einen grafischen URL-Builder**
-mit Live-Vorschau aller vier Kalender in einer Wochenansicht.
+mit Live-Vorschau aller vier Kalender in einer Wochenansicht. Er versteht dieselben Parameter wie die Kalender-URLs als
+Voreinstellung, z. B. `/builder?user=DEIN%40USER&file=25B6&wahl=Signale&nach=alle&ccna=1`, und zeigt einen Link zum Teilen,
+der alle aktuellen Einstellungen enthält (die Adressleiste geht ebenfalls mit).
 
 ## Parameter
 
@@ -24,7 +26,7 @@ Alle vier Kalender verstehen dieselben Parameter:
 |---|---|---|
 | `user` | ja | Rapla-User, wird an Rapla durchgereicht (`@` darf als `%40` kodiert sein) |
 | `file` | ja | Rapla-Kurs, z. B. `25B6` |
-| `wahl` | nein | Stichwort deines Wahlfachs, z. B. `Signale`, `Währung`, `Web`, `Geschäft`, `Linux`, `Robotik`, `Workflow`, `OO`; mehrere mit Komma |
+| `wahl` | nein | Deine Wahlfächer (Name oder eindeutiges Stichwort), mehrere mit Komma. Welche es gibt, erkennt der Proxy pro Kurs automatisch (Fächer, die parallel laufen); der Builder zeigt sie an |
 | `ccna` | nein | `ccna=1` nimmt CCNA (Vorlesung + Klausur) mit auf, sonst liegt es in `rest.ics` |
 | `nach` | nein | Stichworte der Nachklausuren, die du schreiben musst, mehrere mit Komma; `nach=alle` nimmt alle |
 | `token` | nein | wird ignoriert, alte URLs mit Token funktionieren weiter |
@@ -72,6 +74,10 @@ Stack mit der `docker-compose.yml` anlegen (Image wird von GHCR gezogen, nach ne
 Die `config.yaml` ist im Image eingebaut; für eigene Werte die Volume-Zeile in der Compose-Datei aktivieren.
 
 ## Neues Semester / neue Wahlfächer
+
+Wahlfächer werden pro Kurs automatisch aus dem Rapla-Plan erkannt, sobald sie dort parallel eingetragen sind; dafür ist nichts
+zu tun. `wahlfach_pool` in `config.yaml` ist nur noch für Fächer, die die Erkennung nicht findet.
+
 
 `config.yaml` öffnen, unter `wahlfach_pool` die neuen Fächer eintragen (Teil des Rapla-Titels),
 dann pushen (Image wird neu gebaut) oder bei gemounteter Datei `docker compose restart rapla-proxy`. Weitere optionale Fächer wie CCNA gehören unter `optional`

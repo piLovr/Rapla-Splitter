@@ -88,6 +88,7 @@
   .btn:hover { background: var(--sunk); }
   .btn.ok { border-color: var(--ok); color: var(--ok); }
   .urls.off { opacity: .5; pointer-events: none; }
+  .share { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 
   /* Vorschau */
   .calsec { min-width: 0; }
@@ -147,7 +148,9 @@
   #secRapla { order: 1; } #secWahl { order: 2; }
   #secOpt { order: 3; } #secNach { order: 4; }
   .calsec { order: 5; } #secUrls { order: 6; }
-  .checks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .checks, .wgroup { display: flex; flex-wrap: wrap; gap: 6px; }
+  #wahl { display: grid; gap: 10px; }
+  #wahl .wgroup + .wgroup { border-top: 1px dashed var(--line); padding-top: 10px; }
   .check { border: 1px solid var(--line); border-radius: 99px; padding: 5px 12px 5px 9px; font-size: 14px; align-items: center; }
   .check input { margin: 0; }
   .check:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
@@ -190,7 +193,7 @@
     <section class="card" id="secWahl">
       <h2>Wahlfach</h2>
       <div class="checks" id="wahl"></div>
-      <p class="hint">Mehrere möglich (z. B. 3. und 4. Semester). Nicht gewählte landen in „Rest“.</p>
+      <p class="hint">Automatisch aus deinem Plan erkannt: Fächer, die parallel laufen. Kreuze alle an, die du belegst; die anderen landen in „Rest“. Ohne Haken bleibt alles drin.</p>
     </section>
 
     <section class="card" id="secOpt" hidden>
@@ -207,6 +210,10 @@
     <section class="card" id="secUrls">
       <h2>Deine Kalender-URLs</h2>
       <div class="urls" id="urls"></div>
+      <div class="url share" id="share">
+        <div class="name">Link zu diesem Builder <em>mit allen Einstellungen, zum Teilen oder Speichern</em></div>
+        <div class="row"><input type="text" id="shareUrl" readonly aria-label="Link zu diesem Builder"><button class="btn" id="shareCopy" type="button">Kopieren</button></div>
+      </div>
       <p class="hint">Die vier Kalender überschneiden sich nicht und enthalten zusammen alles aus Rapla.</p>
     </section>
   </div>
@@ -250,7 +257,44 @@ const state = {
   wahl: new Set(store.get("wahl", [])), opt: new Set(store.get("opt", [])), nach: new Set(store.get("nach", [])),
   visible: new Set(store.get("visible", CALS.map((c) => c.id))),
   data: null, loadedFor: "", weekStart: mondayOf(new Date()), options: { wahlfach_pool: [], optional: {} },
+  pending: null, // Voreinstellungen aus der Builder-URL, die erst mit dem Kurs aufgeloest werden koennen
 };
+
+/* ---------- Voreinstellungen aus der URL: /builder?user=…&file=…&wahl=…&nach=…&ccna=1 (wie bei den .ics-URLs) ---------- */
+const TRUTHY = ["1", "true", "yes", "ja", "on"];
+const preset = new URLSearchParams(location.search);
+if ([...preset.keys()].length) {
+  const list = (k) => preset.getAll(k).flatMap((v) => v.split(",")).map((x) => x.trim()).filter(Boolean);
+  if (preset.get("user")) state.user = preset.get("user");
+  if (preset.get("file")) state.file = preset.get("file");
+  state.wahl = new Set(); state.nach = new Set(); state.opt = new Set();
+  state.pending = { wahl: list("wahl"), nach: list("nach"), opt: preset };
+}
+const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+function norm(s) { // Spiegel von norm() im Server: 'Web Engineering III' == 'webengineering3'
+  s = s.toLowerCase().replace(/(?<![a-z0-9])(viii|vii|iii|ii|iv|ix|vi|v|x|i)(?![a-z0-9])/g, (m) => ROMAN[m]);
+  s = s.replace(/ä/g, "a").replace(/ö/g, "o").replace(/ü/g, "u").replace(/ß/g, "ss");
+  return s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "");
+}
+function applyPresetOptions() {
+  if (!state.pending) return;
+  for (const k of Object.keys(state.options.optional)) if (TRUTHY.includes((state.pending.opt.get(k) || "").toLowerCase())) state.opt.add(k);
+}
+function applyPresetCourse() { // Stichworte wie beim Server aufloesen: voller Name, sonst eindeutiges Teilwort
+  if (!state.pending || !state.data) return;
+  const pool = coursePool();
+  for (const kw of state.pending.wahl) {
+    const k = norm(kw), exact = pool.filter((p) => norm(p) === k), hits = exact.length ? exact : pool.filter((p) => norm(p).includes(k));
+    if (hits.length === 1) state.wahl.add(hits[0]);
+  }
+  for (const kw of state.pending.nach) {
+    const k = norm(kw);
+    if (k === "alle") { state.nach.add("alle"); continue; }
+    for (const n of state.data.nachklausuren) if (k && (norm(n.title).includes(k) || norm(n.keyword) === k)) state.nach.add(n.keyword);
+  }
+  state.pending = null;
+  persist();
+}
 
 function mondayOf(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
 const pad = (n) => String(n).padStart(2, "0");
@@ -264,26 +308,50 @@ function persist() {
   store.set("opt", [...state.opt]); store.set("nach", [...state.nach]); store.set("visible", [...state.visible]);
 }
 
+const coursePool = () => (state.data ? state.data.wahlfaecher.flat() : []);
+
 /* ---------- Zuordnung im Browser (Spiegel von assign() im Server, siehe Test) ---------- */
-function calOf(e) {
+function calOf(e, wahl) {
   if (e.kind === "rest") return "rest";
-  if (state.wahl.size && e.pool.length && !e.pool.some((p) => state.wahl.has(p))) return "rest";
+  if (wahl.length && e.pool.length && !e.pool.some((p) => wahl.includes(p))) return "rest";
   if (e.opts.some((o) => !state.opt.has(o))) return "rest";
   if (e.kind === "nachklausur") return state.nach.has("alle") || e.nach.some((k) => state.nach.has(k)) ? "klausuren" : "rest";
   return e.kind;
 }
-const events = () => (state.data ? state.data.events.map((e) => ({ ...e, cal: calOf(e), day: e.start.slice(0, 10) })) : []);
+const chosenWahl = () => [...state.wahl].filter((w) => coursePool().includes(w)); // gespeicherte Faecher anderer Kurse zaehlen nicht
+const events = () => {
+  if (!state.data) return [];
+  const wahl = chosenWahl();
+  return state.data.events.map((e) => ({ ...e, cal: calOf(e, wahl), day: e.start.slice(0, 10) }));
+};
 
 /* ---------- URLs ---------- */
 function params() {
   const p = new URLSearchParams({ user: state.user.trim(), file: state.file.trim() });
-  const wahl = [...state.wahl].filter((w) => state.options.wahlfach_pool.includes(w));
+  const wahl = chosenWahl();
   if (wahl.length) p.set("wahl", wahl.join(","));
   for (const k of state.opt) if (k in state.options.optional) p.set(k, "1");
   if (state.nach.size) p.set("nach", [...state.nach].join(","));
   return p;
 }
+function builderUrl() {
+  const p = valid() ? params() : new URLSearchParams();
+  return `${BASE}/builder${[...p.keys()].length ? "?" + p : ""}`;
+}
+function renderShare() {
+  $("shareUrl").value = builderUrl();
+  // Adressleiste mitfuehren, damit auch ein Lesezeichen die Einstellungen enthaelt (nicht solange URL-Vorgaben offen sind)
+  if (!state.pending && location.pathname.startsWith("/builder")) {
+    try { history.replaceState(null, "", builderUrl().slice(BASE.length)); } catch { /* egal */ }
+  }
+}
+async function copyFrom(input, button) {
+  try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand("copy"); }
+  button.textContent = "Kopiert"; button.classList.add("ok");
+  setTimeout(() => { button.textContent = "Kopieren"; button.classList.remove("ok"); }, 1400);
+}
 function renderUrls() {
+  renderShare();
   const all = events(), week = inWeek(all);
   $("urls").classList.toggle("off", !valid());
   $("urls").replaceChildren(...CALS.map((c) => {
@@ -292,11 +360,7 @@ function renderUrls() {
     input.setAttribute("aria-label", `URL ${c.name}`);
     input.addEventListener("focus", () => input.select());
     const copy = el("button", { className: "btn", type: "button", textContent: "Kopieren" });
-    copy.addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand("copy"); }
-      copy.textContent = "Kopiert"; copy.classList.add("ok");
-      setTimeout(() => { copy.textContent = "Kopieren"; copy.classList.remove("ok"); }, 1400);
-    });
+    copy.addEventListener("click", () => copyFrom(input, copy));
     const sub = el("a", { className: "btn", href: url.replace(/^https?:/, "webcal:"), textContent: "Abonnieren", title: "In der Kalender-App abonnieren (webcal)" });
     const count = state.data ? `${week.filter((e) => e.cal === c.id).length} diese Woche · ${all.filter((e) => e.cal === c.id).length} gesamt` : "";
     const row = el("div", { className: "url" },
@@ -315,9 +379,14 @@ function checkbox(value, label, sub, set) {
   if (sub) text.append(el("small", { textContent: sub }));
   return el("label", { className: "check" }, input, text);
 }
+function renderWahl() {
+  const box = $("wahl");
+  if (!state.data) return box.replaceChildren(el("div", { className: "empty", textContent: "Erscheinen, sobald dein Kurs geladen ist." }));
+  const groups = state.data.wahlfaecher;
+  if (!groups.length) return box.replaceChildren(el("div", { className: "empty", textContent: "In deinem Plan laufen keine Fächer parallel, also gibt es nichts zu wählen." }));
+  box.replaceChildren(...groups.map((g) => el("div", { className: "wgroup" }, ...g.map((n) => checkbox(n, n, "", state.wahl)))));
+}
 function renderOptions() {
-  const pool = state.options.wahlfach_pool;
-  $("wahl").replaceChildren(...(pool.length ? pool.map((n) => checkbox(n, n, "", state.wahl)) : [el("div", { className: "empty", textContent: "Keine Wahlfächer eingetragen." })]));
   const opts = Object.entries(state.options.optional);
   $("secOpt").hidden = !opts.length;
   $("opt").replaceChildren(...opts.map(([k, v]) => checkbox(k, v, `?${k}=1`, state.opt)));
@@ -361,14 +430,15 @@ async function load() {
     if (!r.ok) throw new Error(friendly(r, await r.text()));
     const firstLoad = !state.data;
     state.data = await r.json(); state.loadedFor = who;
+    applyPresetCourse();
     loadstate(`${state.data.events.length} Termine geladen.`);
     if (firstLoad || !inWeek(events()).length) jumpToEvents();
-    renderNach(); render();
+    renderWahl(); renderNach(); render();
   } catch (e) {
     if (e.name === "AbortError") return;
     state.data = null; state.loadedFor = "";
     loadstate(e.message === "Failed to fetch" ? "Server nicht erreichbar." : e.message, false, true);
-    renderNach(); render();
+    renderWahl(); renderNach(); render();
   }
 }
 function jumpToEvents() { // diese Woche, falls dort etwas ist, sonst die naechste Woche mit Terminen
@@ -490,6 +560,8 @@ function render() {
 }
 
 /* ---------- Start ---------- */
+$("shareCopy").addEventListener("click", () => copyFrom($("shareUrl"), $("shareCopy")));
+$("shareUrl").addEventListener("focus", (e) => e.target.select());
 const shift = (n) => { state.weekStart = addDays(state.weekStart, n); render(); };
 $("prev").addEventListener("click", () => shift(-7));
 $("next").addEventListener("click", () => shift(7));
@@ -509,7 +581,8 @@ for (const id of ["user", "file"]) {
 
 (async () => {
   try { state.options = await (await fetch("/builder/options.json")).json(); } catch { /* ohne Optionen weiter */ }
-  renderOptions(); renderNach(); render();
+  applyPresetOptions();
+  renderOptions(); renderWahl(); renderNach(); render();
   scheduleLoad(0);
 })();
 </script>

@@ -258,8 +258,9 @@ class Http(unittest.TestCase):
 
     def test_preview_bausteine_reichen_fuer_neuzuordnung_im_browser(self):
         """Der Builder ordnet beim Anhaken selbst neu zu (gleiche Regel wie hier); das muss assign() entsprechen."""
-        raw = json.loads(self.get(f"/preview.json?{self.base}")[2])["events"]
-        pool, keys = CFG["wahlfach_pool"], [n["keyword"] for n in json.loads(self.get(f"/preview.json?{self.base}")[2])["nachklausuren"]]
+        data = json.loads(self.get(f"/preview.json?{self.base}")[2])
+        raw, keys = data["events"], [n["keyword"] for n in data["nachklausuren"]]
+        pool = [n for g in data["wahlfaecher"] for n in g]
 
         def client(e, wahl, opts, nach):  # Spiegel von assignClient() in builder.html
             if e["kind"] == "rest":
@@ -272,7 +273,7 @@ class Http(unittest.TestCase):
                 return "klausuren" if "alle" in nach or set(e["nach"]) & nach else "rest"
             return e["kind"]
 
-        combos = [(set(), set(), set()), ({pool[0]}, set(), set()), ({pool[4], pool[5]}, {"ccna"}, set(keys)),
+        combos = [(set(), set(), set()), ({pool[0]}, set(), set()), ({pool[3], pool[4]}, {"ccna"}, set(keys)),
                   ({pool[1]}, set(), {"alle"}), (set(pool), {"ccna"}, set())]
         for wahl, opts, nach in combos:
             q = self.base + (f"&wahl={urllib.parse.quote(','.join(sorted(wahl)))}" if wahl else "")
@@ -283,6 +284,47 @@ class Http(unittest.TestCase):
     def test_preview_fehler(self):
         self.assertEqual(self.get("/preview.json?file=25B6")[0], 400)
         self.assertEqual(self.get(f"/preview.json?{self.base}&wahl=Quanten")[0], 400)
+
+
+class Wahlfaecher(unittest.TestCase):
+    """Wahlfaecher werden pro Kurs aus dem Plan erkannt, nicht nur aus config.yaml."""
+
+    def test_25b6_erkannt(self):
+        self.assertEqual(app.course_groups(TEXT, CFG), [["Digitale Währungssysteme", "Geschäftsprozesse", "Linux Basics", "Signale und Systeme", "Webengineering 3"]])
+
+    def synthetic(self):
+        from datetime import datetime, timedelta
+        import test_wahlfaecher as tw
+        first = datetime(2026, 10, 9, 8)
+        evs = tw.weekly("Pflichtfach", first + timedelta(days=1), 6)
+        for i, name in enumerate(("Ethik für Informatiker", "Forensik (WM1)", "Gamification")):
+            evs += tw.weekly(name, first + timedelta(hours=i * 0.5), 6, cat="Lehrveranstaltung")
+        evs.append(tw.ev("Klausur Forensik", first + timedelta(weeks=8), cat="Prüfung"))
+        evs.append(tw.ev("Klausur Gamification", first + timedelta(weeks=8, days=1), cat="Prüfung"))
+        return tw.ics(*evs).replace("CATEGORIES:Pflichtfach", "CATEGORIES:Lehrveranstaltung")
+
+    def test_nicht_konfigurierte_wahlfaecher_werden_gefiltert(self):
+        text = self.synthetic()
+        self.assertEqual(app.course_groups(text, CFG), [["Ethik für Informatiker", "Forensik", "Gamification"]])
+        summ = lambda cal, wahl: [app.parse_event(b)["summary"].strip() for k, b in app.parse_items(app.build_feed(text, cal, "x", wahl, set(), CFG)) if k == "event"]
+        vl = summ("vorlesungen", ["Forensik"])
+        self.assertIn("Forensik (WM1)", vl)
+        self.assertIn("Pflichtfach", vl)
+        self.assertNotIn("Gamification", vl)
+        self.assertNotIn("Ethik für Informatiker", vl)
+        # Klausur des gewaehlten Fachs bleibt, die des abgewaehlten wandert in den Rest (Name ohne "(WM1)" passt auf beide)
+        self.assertEqual(summ("klausuren", ["Forensik"]), ["Klausur Forensik"])
+        self.assertIn("Klausur Gamification", summ("rest", ["Forensik"]))
+        # ohne Wahl bleibt alles
+        self.assertEqual(len(summ("vorlesungen", [])), 6 * 4)
+
+    def test_falsches_wahlfach_nennt_die_des_kurses(self):
+        with self.assertRaises(ValueError) as cm:
+            app.resolve_wahl(["Quanten"], app.course_pool(self.synthetic(), CFG))
+        self.assertIn("Gamification", str(cm.exception))
+
+    def test_voller_name_schlaegt_teilwort(self):
+        self.assertEqual(app.resolve_wahl(["Forensik"], ["Forensik", "Digitale Forensik"]), {"Forensik"})
 
 
 class Cache(unittest.TestCase):
