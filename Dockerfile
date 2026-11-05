@@ -9,8 +9,8 @@ COPY app.py /app/app.py
 COPY config.yaml /app/config.yaml
 
 # Unprivilegierter Benutzer
-RUN useradd --system --no-create-home proxy
-USER proxy
+RUN useradd --system --no-create-home rapla
+USER rapla
 
 EXPOSE 8000
 HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
