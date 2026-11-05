@@ -148,6 +148,7 @@
   #secRapla { order: 1; } #secWahl { order: 2; }
   #secOpt { order: 3; } #secNach { order: 4; }
   .calsec { order: 5; } #secUrls { order: 6; }
+  .intro { order: 0; grid-column: 1 / -1; margin: 0; max-width: 75ch; color: var(--muted); font-size: 14.5px; text-wrap: pretty; }
   .checks, .wgroup { display: flex; flex-wrap: wrap; gap: 6px; }
   #wahl { display: grid; gap: 10px; }
   #wahl .wgroup + .wgroup { border-top: 1px dashed var(--line); padding-top: 10px; }
@@ -175,6 +176,8 @@
 </div>
 
 <main>
+  <p class="intro">Rapla Splitter teilt deinen DHBW-Stundenplan aus Rapla in vier Kalender zum Abonnieren: Vorlesungen, Veranstaltungen,
+    Klausuren und den Rest, gefiltert nach deinen Wahlfächern und Nachklausuren. Hier stellst du alles ein, siehst die Vorschau und kopierst die Links für deine Kalender-App.</p>
   <div class="side">
     <section class="card" id="secRapla">
       <h2>Dein Rapla</h2>
