@@ -51,6 +51,10 @@ class Filtering(unittest.TestCase):
             for bad in ("Karfreitag", "Ostermontag", "Fschingsdienstag", "Klausurwoche", "Beginn Theorie"):
                 self.assertNotIn(bad, blob, cal)
 
+    def test_tippfehler_im_titel(self):
+        for cal in ("vorlesungen", "klausuren"):
+            self.assertNotIn("Webengineeering", "\n".join(summaries(feed(cal, wahl="Signale"))), cal)
+
     def test_vorlesungen_wahlfach_signale(self):
         blob = "\n".join(summaries(feed("vorlesungen", wahl="Signale")))
         self.assertIn("Signale und Systeme", blob)

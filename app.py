@@ -23,6 +23,7 @@ import threading
 import time
 import unicodedata
 import urllib.request
+from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -174,10 +175,24 @@ def resolve_wahl(keywords, pool):
     return chosen
 
 
+def title_has(name, title):
+    """norm(name) steckt im Titel, auch mit einem Tippfehler (Rapla: 'Webengineeering III')."""
+    n = norm(name)
+    if n in title:
+        return True
+    if len(n) < 8:
+        return False
+    for size in (len(n) - 1, len(n), len(n) + 1):
+        for i in range(len(title) - size + 1):
+            if SequenceMatcher(None, n, title[i:i + size]).ratio() >= 0.9:
+                return True
+    return False
+
+
 def selected(ev, chosen, enabled_opts, cfg):
     title = norm(ev["summary"])
     if chosen:
-        matched = {e for e in cfg["wahlfach_pool"] if norm(e) in title}
+        matched = {e for e in cfg["wahlfach_pool"] if title_has(e, title)}
         if matched and not (matched & chosen):
             return False
     for key, pattern in cfg["optional"].items():
