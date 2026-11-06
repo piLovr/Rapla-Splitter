@@ -365,7 +365,8 @@ def build_preview(text, wahl_keywords, enabled_opts, cfg, nach_keywords=()):
 # Upstream mit Cache (veraltete Daten, wenn Rapla gerade nicht antwortet)
 # --------------------------------------------------------------------------
 _cache = {}  # file -> (zeitpunkt, text); user steckt bewusst nicht im Schluessel: ein Kurs wird hoechstens alle cache_seconds geholt
-_failed = {}  # file -> (zeitpunkt, UpstreamError): unbekannte Kurse nicht immer wieder bei Rapla erfragen
+_failed = {}  # (user, file) -> (zeitpunkt, UpstreamError): unbekannte Kurse nicht immer wieder bei Rapla erfragen;
+#              mit user im Schluessel, damit ein falscher User den Kurs nicht fuer alle anderen sperrt
 _lock = threading.Lock()
 _key_locks = {}
 _ctx = threading.local()  # IP des Aufrufers, fuer das Abruf-Limit
@@ -450,7 +451,7 @@ def fetch(user, file):
     key = file
     with _lock:
         hit = _cache.get(key)
-        bad = _failed.get(key)
+        bad = _failed.get((user, file))
         key_lock = _key_locks.setdefault(key, threading.Lock())
     if hit and time.time() - hit[0] < CFG["cache_seconds"]:
         return hit[1]
@@ -488,14 +489,14 @@ def fetch(user, file):
                 with _lock:
                     if len(_failed) >= 256:
                         _failed.pop(min(_failed, key=lambda k: _failed[k][0]))
-                    _failed[key] = (time.time(), err)
+                    _failed[(user, file)] = (time.time(), err)
             elif hit:  # veraltete Kopie ausliefern und Rapla erst nach retry_seconds wieder fragen
                 with _lock:
                     _cache[key] = (time.time() - CFG["cache_seconds"] + CFG["retry_seconds"], hit[1])
                 return hit[1]
             raise err from e
         with _lock:
-            _failed.pop(key, None)
+            _failed.pop((user, file), None)
             if len(_cache) >= 256:
                 _cache.pop(min(_cache, key=lambda k: _cache[k][0]))
             _cache[key] = (time.time(), text)

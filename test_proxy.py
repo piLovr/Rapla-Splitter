@@ -412,7 +412,7 @@ class Schutz(unittest.TestCase):
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
                 cls.upstream_hits += 1
-                if "file=25B6" in self.path:
+                if "file=25B6" in self.path and "user=falsch" not in self.path:
                     data, code = TEXT.encode(), 200
                 else:
                     data, code = b"The calendar 'x' you tried to retrieve is not published or available.", 404
@@ -465,6 +465,13 @@ class Schutz(unittest.TestCase):
             self.assertEqual(code, 404)  # nicht 5xx: Cloudflare ersetzt sonst den Text durch eine HTML-Fehlerseite
             self.assertIn("not published", body)
         self.assertEqual(self.upstream_hits, 1)
+
+    def test_falscher_user_sperrt_den_kurs_nicht_fuer_andere(self):
+        code, body, _h = self.get("/preview.json?user=falsch&file=25B6")
+        self.assertEqual(code, 404)
+        self.assertEqual(self.get("/preview.json?user=a&file=25B6")[0], 200)
+        self.assertEqual(self.get("/preview.json?user=falsch&file=25B6")[0], 200)  # jetzt aus dem Kurs-Cache
+        self.assertEqual(self.upstream_hits, 2)
 
     def test_upstream_ausfall_ist_502(self):
         app.CFG["upstream"] = "http://127.0.0.1:9/ical"
