@@ -113,6 +113,14 @@ class Erkennung(unittest.TestCase):
         events = weekly("Netztechnik", FIRST, 18) + weekly("CCNA-2", FIRST, 6)
         self.assertEqual(groups(ics(*events)), [])
 
+    def test_wahlfach_mit_zwei_bloecken_pro_tag(self):
+        # wie Maschinenbau (WM3) in 24B6: vormittags und nachmittags, die Alternativen verteilen sich auf die Bloecke
+        afternoon = FIRST + timedelta(hours=5)
+        events = weekly("Maschinenbau", FIRST, 8) + weekly("Maschinenbau", afternoon, 8)
+        events += weekly("E-Business", FIRST, 6) + weekly("Computergraphik", afternoon, 6)
+        events += weekly("Netztechnik", FIRST + timedelta(days=1), 8)
+        self.assertEqual(groups(ics(*events)), [["Computergraphik", "E-Business", "Maschinenbau"]])
+
     def test_zwei_getrennte_wahlbloecke(self):
         later = FIRST + timedelta(days=-4, hours=6)
         events = semester() + weekly("Robotik", later, 6) + weekly("Workflow", later, 6) + weekly("OO Best Practice", later, 6)

@@ -45,7 +45,8 @@ VARIANT = re.compile(r"\s*[(<\[][^)>\]]*[)>\]]|^\W+")
 GROUP_SUFFIX = re.compile(r"[\s\-_(]*\b(gruppe|group|gr\.?|kurs|teil|part)?\s*([a-d]|\d{1,2}|i{1,3})\)?\s*$", re.I)
 
 MIN_OVERLAPS = 2  # so oft muessen zwei Faecher zusammenfallen, bevor sie als Alternativen gelten
-MIN_RATIO = 0.5  # ... und mindestens so viel Anteil des haeufigeren der beiden Faecher
+MIN_RATIO = 0.5  # ... und mindestens so viel Anteil des selteneren der beiden Faecher; ausserdem muss jedes Wahlfach
+#                   mindestens so oft parallel zu anderen seiner Gruppe liegen (sonst ist es ein Pflichtfach)
 
 
 # --------------------------------------------------------------------------
@@ -100,20 +101,48 @@ def group_base(title):
 
 def overlaps(events):
     """Zaehlt je Titelpaar, wie oft sich Termine zeitlich ueberschneiden."""
-    pairs = Counter()
+    return _pair_counts(_parallel(events))
+
+
+def _pair_counts(parallel):
+    return Counter((t1, t2) for (_, _, t1), others in parallel for t2 in others if t1 < t2)
+
+
+def _parallel(events):
+    """-> [(termin, {titel anderer Faecher, die gleichzeitig laufen})] fuer jeden Termin."""
     events = sorted(events)
+    out = [(e, set()) for e in events]
     for i, (s1, e1, t1) in enumerate(events):
-        for s2, e2, t2 in events[i + 1:]:
+        for j in range(i + 1, len(events)):
+            s2, e2, t2 = events[j]
             if s2 >= e1:
                 break
             if t1 != t2:
-                pairs[tuple(sorted((t1, t2)))] += 1
-    return pairs
+                out[i][1].add(t2)
+                out[j][1].add(t1)
+    return out
 
 
 def elective_groups(events):
     """-> Liste von Wahlgruppen, jede = sortierte Liste (titel, anzahl_termine)."""
     counts = Counter(t for _, _, t in events)
+    parallel = _parallel(events)
+    pairs = _pair_counts(parallel)
+    # Paare: oft genug gleichzeitig, gemessen am selteneren Fach (ein Wahlfach mit zwei Bloecken pro Tag hat
+    # doppelt so viele Termine wie seine Alternativen, die sich auf die Bloecke verteilen)
+    linked = {
+        (a, b) for (a, b), n in pairs.items()
+        if n >= MIN_OVERLAPS and n / min(counts[a], counts[b]) >= MIN_RATIO and group_base(a) != group_base(b)
+    }
+    # Ein Fach, das nur ab und zu neben einem Wahlfach liegt (Pflichtfach neben CCNA), fliegt raus:
+    # die Mehrheit seiner Termine muss parallel zu einem verbundenen Fach liegen
+    while True:
+        covered = Counter(t for (_, _, t), others in parallel if any(tuple(sorted((t, o))) in linked for o in others))
+        drop = {t for p in linked for t in p if covered[t] / counts[t] < MIN_RATIO}
+        if not drop:
+            break
+        linked = {p for p in linked if not drop & set(p)}
+
     parent = {}
 
     def find(x):
@@ -122,16 +151,10 @@ def elective_groups(events):
             x = parent[x]
         return x
 
-    linked = set()
-    for (a, b), n in overlaps(events).items():
-        if n < MIN_OVERLAPS or n / max(counts[a], counts[b]) < MIN_RATIO:
-            continue
-        if group_base(a) == group_base(b):
-            continue  # nur parallele Uebungsgruppen
+    for a, b in linked:
         parent[find(a)] = find(b)
-        linked.update((a, b))
     comps = defaultdict(list)
-    for t in linked:
+    for t in {t for p in linked for t in p}:
         comps[find(t)].append(t)
     return sorted(
         (sorted((t, counts[t]) for t in c) for c in comps.values() if len(c) > 1),
